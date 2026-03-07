@@ -50,6 +50,17 @@ Then open:
 http://127.0.0.1:8080
 ```
 
+The web page includes a **Headless Training** panel that talks to backend APIs:
+- `POST /api/train/start`
+- `POST /api/train/stop`
+- `GET /api/train/status`
+
+Training implementation details:
+- algorithm: REINFORCE (policy gradient)
+- state encoder: one-hot tensor `16 x 4 x 4` (`2^0` channel represents empty cells)
+- policy network: shallow CNN, `2x2` kernels, stride `1`, **no padding**, **no pooling**
+- current backend RL trainer supports `workers=1`
+
 ## Headless mode (pure Python)
 You can run game episodes without starting the web server:
 
@@ -57,12 +68,23 @@ You can run game episodes without starting the web server:
 python -m backend.headless --episodes 10 --seed 42
 ```
 
+Run multiple episodes in parallel:
+
+```bash
+python -m backend.headless --episodes 1000 --workers 8 --seed 42
+```
+
+Headless defaults:
+- `state` / `board`: `log2` encoded 4x4 matrix (empty cell = `0`)
+- action space: only `0,1,2,3` (up/right/down/left), regardless of whether a move changes the board
+- `terminate_on_win=True` by default (use `--no-terminate-on-win` to continue after 2048)
+
 For programmatic use:
 
 ```python
 from backend.headless import Headless2048Env
 
-env = Headless2048Env(seed=42, terminate_on_win=False)
+env = Headless2048Env(seed=42, terminate_on_win=True)
 state = env.reset()
 state, reward, terminated, truncated, info = env.step(0)
 ```

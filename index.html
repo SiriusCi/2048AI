@@ -72,6 +72,42 @@
       </div>
     </div>
 
+    <div id="training-panel">
+      <hr>
+      <p><strong class="important">Headless Training</strong> (backend-driven)</p>
+      <p>
+        Episodes
+        <input id="training-episodes" type="number" min="1" value="100">
+        Workers
+        <input id="training-workers" type="number" min="0" value="1">
+      </p>
+      <p>
+        Seed
+        <input id="training-seed" type="number" placeholder="optional">
+        Max steps
+        <input id="training-max-steps" type="number" min="1" placeholder="optional">
+      </p>
+      <p>
+        <label><input id="training-terminate-on-win" type="checkbox" checked> terminate_on_win</label>
+      </p>
+      <p>
+        <button id="training-start-button">Start Training</button>
+        <button id="training-stop-button" disabled>Stop Training</button>
+      </p>
+      <pre id="training-status">running: no
+algorithm: reinforce
+network: cnn-3layer-no-padding
+encoding: onehot-16x4x4
+progress: 0/0
+workers: 1
+averageScore: 0.00
+maxTileSeen: 0
+entropy: -
+loss: -
+globalStep: 0</pre>
+      <pre id="training-board">No training board yet.</pre>
+    </div>
+
     <p class="game-explanation">
       <strong class="important">How to play:</strong> Use your <strong>arrow keys</strong> to move the tiles. When two tiles with the same number touch, they <strong>merge into one!</strong>
     </p>
