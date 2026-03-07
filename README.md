@@ -34,5 +34,21 @@ You can find the same information in the [contributing guide.](https://github.co
 ## License
 2048 is licensed under the [MIT license.](https://github.com/gabrielecirulli/2048/blob/master/LICENSE.txt)
 
+## Run locally (Python backend)
+This project now includes a Python server that owns all game state and logic.
+The browser only sends input commands and renders the state returned by the server.
+
+From the project root:
+
+```bash
+python server.py --host 127.0.0.1 --port 8080
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8080
+```
+
 ## Donations
 I made this in my spare time, and it's hosted on GitHub (which means I don't have any hosting costs), but if you enjoyed the game and feel like buying me coffee, you can donate at my BTC address: `1Ec6onfsQmoP9kkL3zkpB6c5sA4PVcXU2i`. Thank you very much!
