@@ -3,11 +3,13 @@
 
 from backend.app import main, parse_args, serve
 from backend.game import Game2048
+from backend.headless import Headless2048Env
 from backend.http_handler import GameRequestHandler
 from backend.service import GameService
 
 __all__ = [
     "Game2048",
+    "Headless2048Env",
     "GameRequestHandler",
     "GameService",
     "main",

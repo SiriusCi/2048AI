@@ -16,12 +16,16 @@ class Game2048:
         3: (-1, 0),  # Left
     }
 
-    def __init__(self, size: int = 4, start_tiles: int = 2) -> None:
+    def __init__(self, size: int = 4, start_tiles: int = 2, seed: int | None = None) -> None:
         self.size = size
         self.start_tiles = start_tiles
         self.best_score = 0
         self._rng = random.Random()
+        self.set_seed(seed)
         self.reset()
+
+    def set_seed(self, seed: int | None) -> None:
+        self._rng.seed(seed)
 
     def reset(self) -> None:
         self.grid = [[0 for _ in range(self.size)] for _ in range(self.size)]
@@ -36,6 +40,12 @@ class Game2048:
 
     def is_game_terminated(self) -> bool:
         return self.over or (self.won and not self.keep_playing)
+
+    def board(self) -> list[list[int]]:
+        return [[self.grid[x][y] for x in range(self.size)] for y in range(self.size)]
+
+    def max_tile(self) -> int:
+        return max((value for column in self.grid for value in column), default=0)
 
     def _add_start_tiles(self) -> None:
         for _ in range(self.start_tiles):
@@ -103,6 +113,36 @@ class Game2048:
 
     def moves_available(self) -> bool:
         return self._cells_available() or self._tile_matches_available()
+
+    def _snapshot(self) -> dict[str, Any]:
+        return {
+            "grid": [column[:] for column in self.grid],
+            "score": self.score,
+            "over": self.over,
+            "won": self.won,
+            "keep_playing": self.keep_playing,
+            "best_score": self.best_score,
+            "rng_state": self._rng.getstate(),
+        }
+
+    def _restore_snapshot(self, snapshot: dict[str, Any]) -> None:
+        self.grid = [column[:] for column in snapshot["grid"]]
+        self.score = snapshot["score"]
+        self.over = snapshot["over"]
+        self.won = snapshot["won"]
+        self.keep_playing = snapshot["keep_playing"]
+        self.best_score = snapshot["best_score"]
+        self._rng.setstate(snapshot["rng_state"])
+
+    def can_move(self, direction: int) -> bool:
+        snapshot = self._snapshot()
+        try:
+            return self.move(direction)
+        finally:
+            self._restore_snapshot(snapshot)
+
+    def legal_moves(self) -> list[int]:
+        return [direction for direction in self.DIRECTIONS if self.can_move(direction)]
 
     def move(self, direction: int) -> bool:
         if direction not in self.DIRECTIONS:

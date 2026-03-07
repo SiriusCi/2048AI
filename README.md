@@ -50,5 +50,22 @@ Then open:
 http://127.0.0.1:8080
 ```
 
+## Headless mode (pure Python)
+You can run game episodes without starting the web server:
+
+```bash
+python -m backend.headless --episodes 10 --seed 42
+```
+
+For programmatic use:
+
+```python
+from backend.headless import Headless2048Env
+
+env = Headless2048Env(seed=42, terminate_on_win=False)
+state = env.reset()
+state, reward, terminated, truncated, info = env.step(0)
+```
+
 ## Donations
 I made this in my spare time, and it's hosted on GitHub (which means I don't have any hosting costs), but if you enjoyed the game and feel like buying me coffee, you can donate at my BTC address: `1Ec6onfsQmoP9kkL3zkpB6c5sA4PVcXU2i`. Thank you very much!
