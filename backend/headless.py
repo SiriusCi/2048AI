@@ -89,6 +89,9 @@ class Headless2048Env:
 
         previous_score = self.game.score
         moved = self.game.move(action)
+        animation_grid = self.game.consume_last_animation_grid()
+        if animation_grid is None:
+            animation_grid = self.game.current_animation_grid()
         self.steps += 1
 
         if self.game.won and not self.terminate_on_win and not self.game.keep_playing:
@@ -101,8 +104,10 @@ class Headless2048Env:
         observation = self.observation()
         info = {
             "moved": moved,
+            "action": action,
             "score": self.game.score,
             "steps": self.steps,
+            "animationGrid": animation_grid,
             "legalActions": observation["legalActions"],
             "movableActions": observation["movableActions"],
         }

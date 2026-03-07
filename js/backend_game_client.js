@@ -6,6 +6,13 @@ function BackendGameClient(InputManager, Actuator) {
   this.pendingDirection = null;
   this.trainingPollTimer = null;
   this.trainingElements = null;
+  this.isTrainingRunning = false;
+  this.trainingBestScore = 0;
+  this.lastTrainingRawBoard = null;
+  this.trainingAnimationMs = 140;
+  this.trainingAckTimer = null;
+  this.lastRenderedFrameId = 0;
+  this.lastAckedFrameId = 0;
 
   this.inputManager.on("move", this.move.bind(this));
   this.inputManager.on("restart", this.restart.bind(this));
@@ -82,12 +89,19 @@ BackendGameClient.prototype.render = function (state) {
   if (!state || !state.grid) {
     return;
   }
+  if (this.isTrainingRunning) {
+    return;
+  }
 
   if (!state.terminated) {
     this.actuator.continueGame();
   }
 
-  this.actuator.actuate(this.buildGrid(state.grid), {
+  var grid = state.animationGrid
+    ? this.buildGridFromAnimationGrid(state.animationGrid)
+    : this.buildGrid(state.grid);
+
+  this.actuator.actuate(grid, {
     score: state.score || 0,
     over: !!state.over,
     won: !!state.won,
@@ -97,6 +111,9 @@ BackendGameClient.prototype.render = function (state) {
 };
 
 BackendGameClient.prototype.restart = function () {
+  if (this.isTrainingRunning) {
+    return;
+  }
   var self = this;
   this.pendingDirection = null;
   this.sendRequest("POST", "/api/restart", null, function (error, state) {
@@ -110,6 +127,9 @@ BackendGameClient.prototype.restart = function () {
 };
 
 BackendGameClient.prototype.keepPlaying = function () {
+  if (this.isTrainingRunning) {
+    return;
+  }
   var self = this;
   this.sendRequest("POST", "/api/keep-playing", null, function (error, state) {
     if (error) {
@@ -122,6 +142,9 @@ BackendGameClient.prototype.keepPlaying = function () {
 };
 
 BackendGameClient.prototype.move = function (direction) {
+  if (this.isTrainingRunning) {
+    return;
+  }
   var self = this;
 
   if (this.inFlight) {
@@ -224,6 +247,14 @@ BackendGameClient.prototype.startTraining = function () {
       self.renderTrainingError("Failed to start training.");
       return;
     }
+    self.trainingBestScore = 0;
+    self.lastTrainingRawBoard = null;
+    self.lastRenderedFrameId = 0;
+    self.lastAckedFrameId = 0;
+    if (self.trainingAckTimer) {
+      window.clearTimeout(self.trainingAckTimer);
+      self.trainingAckTimer = null;
+    }
     self.updateTrainingStatus(status);
     self.startTrainingPolling();
   });
@@ -264,13 +295,17 @@ BackendGameClient.prototype.startTrainingPolling = function () {
   }
   this.trainingPollTimer = window.setInterval(function () {
     self.fetchTrainingStatus();
-  }, 1000);
+  }, 40);
 };
 
 BackendGameClient.prototype.stopTrainingPolling = function () {
   if (this.trainingPollTimer) {
     window.clearInterval(this.trainingPollTimer);
     this.trainingPollTimer = null;
+  }
+  if (this.trainingAckTimer) {
+    window.clearTimeout(this.trainingAckTimer);
+    this.trainingAckTimer = null;
   }
 };
 
@@ -311,29 +346,168 @@ BackendGameClient.prototype.formatTrainingBoard = function (rawBoard) {
     .join("\n");
 };
 
+BackendGameClient.prototype.buildGridFromRawBoard = function (rawBoard) {
+  return this.buildGridFromRawBoards(rawBoard, null);
+};
+
+BackendGameClient.prototype.buildTileFromAnimationData = function (tileData) {
+  if (!tileData || !tileData.position) {
+    return null;
+  }
+
+  var tile = new Tile(tileData.position, tileData.value);
+  if (tileData.previousPosition) {
+    tile.previousPosition = {
+      x: tileData.previousPosition.x,
+      y: tileData.previousPosition.y
+    };
+  }
+
+  if (tileData.mergedFrom && tileData.mergedFrom.length) {
+    var self = this;
+    tile.mergedFrom = tileData.mergedFrom
+      .map(function (mergedTileData) {
+        return self.buildTileFromAnimationData(mergedTileData);
+      })
+      .filter(function (mergedTile) {
+        return !!mergedTile;
+      });
+  }
+
+  return tile;
+};
+
+BackendGameClient.prototype.buildGridFromAnimationGrid = function (animationGrid) {
+  if (!animationGrid || !animationGrid.cells || !animationGrid.size) {
+    return null;
+  }
+
+  var size = animationGrid.size;
+  var grid = new Grid(size);
+  var x;
+  var y;
+
+  for (x = 0; x < size; x++) {
+    var column = animationGrid.cells[x] || [];
+    for (y = 0; y < size; y++) {
+      var tileData = column[y];
+      grid.cells[x][y] = tileData ? this.buildTileFromAnimationData(tileData) : null;
+    }
+  }
+
+  return grid;
+};
+
+BackendGameClient.prototype.buildGridFromRawBoards = function (rawBoard, previousRawBoard) {
+  var size = rawBoard.length;
+  var cells = [];
+  var x;
+  var y;
+
+  for (x = 0; x < size; x++) {
+    cells[x] = [];
+    for (y = 0; y < size; y++) {
+      var row = rawBoard[y] || [];
+      var value = row[x] || 0;
+      if (value > 0) {
+        cells[x][y] = {
+          position: { x: x, y: y },
+          value: value
+        };
+      } else {
+        cells[x][y] = null;
+      }
+    }
+  }
+
+  return this.buildGrid({ size: size, cells: cells });
+};
+
+BackendGameClient.prototype.renderTrainingOnMainBoard = function (latestState) {
+  if (!latestState || !latestState.rawBoard) {
+    return;
+  }
+
+  var score = latestState.score || 0;
+  if (score > this.trainingBestScore) {
+    this.trainingBestScore = score;
+  }
+
+  var grid = null;
+  if (latestState.animationGrid) {
+    grid = this.buildGridFromAnimationGrid(latestState.animationGrid);
+  }
+  if (!grid) {
+    grid = this.buildGridFromRawBoards(latestState.rawBoard, this.lastTrainingRawBoard);
+  }
+  this.actuator.continueGame();
+  this.actuator.actuate(grid, {
+    score: score,
+    over: false,
+    won: false,
+    bestScore: this.trainingBestScore,
+    terminated: false
+  });
+
+  this.lastTrainingRawBoard = JSON.parse(JSON.stringify(latestState.rawBoard));
+};
+
+BackendGameClient.prototype.sendTrainingStepDone = function (frameId) {
+  var self = this;
+  this.sendRequest("POST", "/api/train/step-done", { frameId: frameId }, function (error) {
+    if (error) {
+      self.logError(error);
+      return;
+    }
+    self.lastAckedFrameId = frameId;
+  });
+};
+
+BackendGameClient.prototype.scheduleTrainingStepDone = function (frameId) {
+  var self = this;
+  if (this.trainingAckTimer) {
+    window.clearTimeout(this.trainingAckTimer);
+    this.trainingAckTimer = null;
+  }
+  this.trainingAckTimer = window.setTimeout(function () {
+    self.trainingAckTimer = null;
+    self.sendTrainingStepDone(frameId);
+  }, this.trainingAnimationMs);
+};
+
 BackendGameClient.prototype.updateTrainingStatus = function (status) {
   if (!this.trainingElements || !status) {
     return;
   }
 
+  var wasRunning = this.isTrainingRunning;
   var running = !!status.running;
+  this.isTrainingRunning = running;
   var requested = status.requestedEpisodes || 0;
   var completed = status.completedEpisodes || 0;
   var avg = status.averageScore || 0;
   var maxTile = status.maxTileSeen || 0;
+  var latestFrameId = status.latestFrameId || 0;
+  var ackedFrameId = status.ackedFrameId || 0;
 
   var lines = [
     "algorithm: " + (status.algorithm || "unknown"),
     "network: " + (status.network || "unknown"),
     "encoding: " + (status.encoding || "unknown"),
     "running: " + (running ? "yes" : "no"),
+    "currentEpisode: " + (status.currentEpisode || 0),
     "progress: " + completed + "/" + requested,
     "workers: " + (status.workers || 1),
     "averageScore: " + (typeof avg === "number" ? avg.toFixed(2) : avg),
     "maxTileSeen: " + maxTile,
     "entropy: " + (status.entropy == null ? "-" : status.entropy.toFixed(6)),
     "loss: " + (status.loss == null ? "-" : status.loss.toFixed(6)),
-    "globalStep: " + (status.globalStep || 0)
+    "globalStep: " + (status.globalStep || 0),
+    "frame: " + latestFrameId,
+    "ackedFrame: " + ackedFrameId,
+    "awaitingAck: " + (status.awaitingAck ? "yes" : "no"),
+    "coolingDown: " + (status.coolingDown ? "yes" : "no"),
+    "postAckDelaySec: " + (status.postAckDelaySec == null ? "-" : status.postAckDelaySec)
   ];
 
   if (status.lastEpisode) {
@@ -356,6 +530,11 @@ BackendGameClient.prototype.updateTrainingStatus = function (status) {
 
   if (status.latestState && status.latestState.rawBoard) {
     this.trainingElements.boardBlock.textContent = this.formatTrainingBoard(status.latestState.rawBoard);
+    if (running && latestFrameId > this.lastRenderedFrameId) {
+      this.renderTrainingOnMainBoard(status.latestState);
+      this.lastRenderedFrameId = latestFrameId;
+      this.scheduleTrainingStepDone(latestFrameId);
+    }
   } else {
     this.trainingElements.boardBlock.textContent = "No training board yet.";
   }
@@ -367,6 +546,12 @@ BackendGameClient.prototype.updateTrainingStatus = function (status) {
     this.startTrainingPolling();
   } else {
     this.stopTrainingPolling();
+    this.lastTrainingRawBoard = null;
+    this.lastRenderedFrameId = 0;
+    this.lastAckedFrameId = 0;
+    if (wasRunning) {
+      this.fetchState();
+    }
   }
 };
 

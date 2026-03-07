@@ -54,12 +54,15 @@ The web page includes a **Headless Training** panel that talks to backend APIs:
 - `POST /api/train/start`
 - `POST /api/train/stop`
 - `GET /api/train/status`
+- `POST /api/train/step-done` (frontend animation ack for strict step sync)
 
 Training implementation details:
 - algorithm: REINFORCE (policy gradient)
 - state encoder: one-hot tensor `16 x 4 x 4` (`2^0` channel represents empty cells)
 - policy network: shallow CNN, `2x2` kernels, stride `1`, **no padding**, **no pooling**
 - current backend RL trainer supports `workers=1`
+- training runs in strict sync mode: backend waits each step until frontend reports animation finished
+- and then enforces an additional fixed 2-second delay before the next step
 
 ## Headless mode (pure Python)
 You can run game episodes without starting the web server:

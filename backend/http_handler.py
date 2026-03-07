@@ -130,6 +130,25 @@ class GameRequestHandler(SimpleHTTPRequestHandler):
             self._send_json(self.service.training_stop())
             return
 
+        if path == "/api/train/step-done":
+            body = self._read_json()
+            if body is None:
+                self._send_json({"error": "Invalid JSON body"}, HTTPStatus.BAD_REQUEST)
+                return
+
+            frame_id = body.get("frameId")
+            try:
+                frame_id = int(frame_id)
+            except (TypeError, ValueError):
+                self._send_json({"error": "Field 'frameId' must be an integer"}, HTTPStatus.BAD_REQUEST)
+                return
+
+            try:
+                self._send_json(self.service.training_step_done(frame_id))
+            except ValueError as error:
+                self._send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
         if path == "/api/restart":
             self._send_json(self.service.restart())
             return

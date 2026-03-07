@@ -15,8 +15,11 @@ from .rl import ReinforceCnnConfig, ReinforceCnnTrainer
 class TrainingManager:
     """Manage asynchronous RL training jobs for frontend monitoring."""
 
+    POST_ACK_DELAY_SEC = 2.0
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._sync_cv = threading.Condition(self._lock)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._status = self._new_status()
@@ -33,6 +36,7 @@ class TrainingManager:
             "encoding": "onehot-16x4x4",
             "requestedEpisodes": 0,
             "completedEpisodes": 0,
+            "currentEpisode": 0,
             "workers": 1,
             "seed": None,
             "maxSteps": None,
@@ -45,6 +49,12 @@ class TrainingManager:
             "loss": None,
             "entropy": None,
             "globalStep": 0,
+            "syncWithFrontend": True,
+            "latestFrameId": 0,
+            "ackedFrameId": 0,
+            "awaitingAck": False,
+            "coolingDown": False,
+            "postAckDelaySec": self.POST_ACK_DELAY_SEC,
             "startedAt": None,
             "finishedAt": None,
         }
@@ -71,7 +81,7 @@ class TrainingManager:
         if resolved_workers != 1:
             raise ValueError("CNN policy-gradient training currently supports workers=1")
 
-        with self._lock:
+        with self._sync_cv:
             if self._status["running"]:
                 raise RuntimeError("Training is already running")
 
@@ -98,11 +108,29 @@ class TrainingManager:
             return copy.deepcopy(self._status)
 
     def stop(self) -> dict[str, Any]:
-        with self._lock:
+        with self._sync_cv:
             if not self._status["running"]:
                 return copy.deepcopy(self._status)
             self._status["stopRequested"] = True
             self._stop_event.set()
+            self._sync_cv.notify_all()
+            return copy.deepcopy(self._status)
+
+    def step_done(self, frame_id: int) -> dict[str, Any]:
+        if frame_id < 0:
+            raise ValueError("frameId must be >= 0")
+
+        with self._sync_cv:
+            current_acked = int(self._status["ackedFrameId"])
+            latest = int(self._status["latestFrameId"])
+            effective_frame = min(frame_id, latest)
+            if effective_frame > current_acked:
+                self._status["ackedFrameId"] = effective_frame
+
+            self._status["awaitingAck"] = bool(
+                self._status["running"] and int(self._status["ackedFrameId"]) < latest
+            )
+            self._sync_cv.notify_all()
             return copy.deepcopy(self._status)
 
     def _on_episode_end(
@@ -144,6 +172,51 @@ class TrainingManager:
             self._status["loss"] = metrics.get("loss")
             self._status["entropy"] = metrics.get("entropy")
             self._status["globalStep"] = int(metrics.get("globalStep", self._status["globalStep"]))
+            self._status["currentEpisode"] = int(episode)
+
+    def _on_step(
+        self,
+        episode: int,
+        obs: dict[str, Any],
+        metrics: dict[str, Any],
+    ) -> None:
+        with self._sync_cv:
+            frame_id = int(self._status["latestFrameId"]) + 1
+            self._status["currentEpisode"] = int(episode)
+            self._status["globalStep"] = int(metrics.get("globalStep", self._status["globalStep"]))
+            self._status["latestState"] = {
+                "state": obs.get("state"),
+                "rawBoard": obs.get("rawBoard"),
+                "score": int(obs.get("score", 0)),
+                "maxTile": int(obs.get("maxTile", 0)),
+                "steps": int(obs.get("steps", 0)),
+                "action": obs.get("action"),
+                "animationGrid": obs.get("animationGrid"),
+            }
+            self._status["latestFrameId"] = frame_id
+            self._status["awaitingAck"] = True
+            self._sync_cv.notify_all()
+
+            while (
+                not self._stop_event.is_set()
+                and self._status["running"]
+                and int(self._status["ackedFrameId"]) < frame_id
+            ):
+                self._sync_cv.wait(timeout=0.5)
+
+            self._status["awaitingAck"] = False
+            self._status["coolingDown"] = True
+            self._sync_cv.notify_all()
+
+            deadline = time.time() + self.POST_ACK_DELAY_SEC
+            while not self._stop_event.is_set() and self._status["running"]:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                self._sync_cv.wait(timeout=min(0.2, remaining))
+
+            self._status["coolingDown"] = False
+            self._sync_cv.notify_all()
 
     def _run_job(
         self,
@@ -160,6 +233,7 @@ class TrainingManager:
                 max_steps=max_steps,
                 terminate_on_win=terminate_on_win,
                 stop_event=self._stop_event,
+                on_step=self._on_step,
                 on_episode_end=self._on_episode_end,
             )
             self._latest_model_state = summary.get("modelStateDict")
@@ -175,12 +249,15 @@ class TrainingManager:
         except Exception as error:  # noqa: BLE001
             error_message = str(error)
         finally:
-            with self._lock:
+            with self._sync_cv:
                 completed = int(self._status["completedEpisodes"])
                 self._status["running"] = False
                 self._status["finishedAt"] = time.time()
                 self._status["stopped"] = bool(self._status["stopRequested"]) or completed < episodes
                 self._status["error"] = error_message
+                self._status["awaitingAck"] = False
+                self._status["coolingDown"] = False
+                self._sync_cv.notify_all()
 
 
 class GameService:
@@ -209,6 +286,9 @@ class GameService:
         with self._lock:
             moved = self._game.move(direction)
             state = self._game.serialize_state()
+            animation_grid = self._game.consume_last_animation_grid()
+            if animation_grid is not None:
+                state["animationGrid"] = animation_grid
             state["moved"] = moved
             return state
 
@@ -234,3 +314,6 @@ class GameService:
 
     def training_stop(self) -> dict[str, Any]:
         return self._training.stop()
+
+    def training_step_done(self, frame_id: int) -> dict[str, Any]:
+        return self._training.step_done(frame_id)

@@ -99,6 +99,7 @@ class ReinforceCnnTrainer:
         max_steps: int | None,
         terminate_on_win: bool,
         stop_event: Any,
+        on_step: Callable[[int, dict[str, Any], dict[str, Any]], None] | None = None,
         on_episode_end: Callable[[int, dict[str, Any], dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         score_sum = 0.0
@@ -133,7 +134,7 @@ class ReinforceCnnTrainer:
                 dist = Categorical(logits=logits)
                 action = dist.sample()
 
-                next_obs, reward, terminated, truncated, _ = env.step(int(action.item()))
+                next_obs, reward, terminated, truncated, step_info = env.step(int(action.item()))
                 log_probs.append(dist.log_prob(action))
                 entropies.append(dist.entropy())
                 rewards.append(float(reward))
@@ -141,6 +142,19 @@ class ReinforceCnnTrainer:
                 self.global_step += 1
                 total_reward += float(reward)
                 obs = next_obs
+
+                if on_step is not None:
+                    step_obs = dict(obs)
+                    step_obs["action"] = int(step_info.get("action", int(action.item())))
+                    step_obs["animationGrid"] = step_info.get("animationGrid")
+                    on_step(
+                        episode,
+                        step_obs,
+                        {
+                            "globalStep": self.global_step,
+                            "totalReward": total_reward,
+                        },
+                    )
 
             if stop_event.is_set():
                 break
