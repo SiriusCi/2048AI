@@ -216,6 +216,10 @@ class TrainingManager:
             "truncated": bool(result.get("truncated", False)),
         }
 
+        average_score = 0.0
+        checkpoints_saved = 0
+        latest_checkpoint_path: str | None = None
+
         with self._lock:
             completed = int(self._status["completedEpisodes"]) + 1
             self._status["completedEpisodes"] = completed
@@ -243,6 +247,26 @@ class TrainingManager:
                 self._status["latestCheckpointPath"] = metrics.get("checkpointPath")
             if metrics.get("checkpointsSaved") is not None:
                 self._status["checkpointsSaved"] = int(metrics.get("checkpointsSaved", 0))
+
+            average_score = float(self._status["averageScore"])
+            checkpoints_saved = int(self._status["checkpointsSaved"])
+            latest_checkpoint_path = self._status["latestCheckpointPath"]
+
+        checkpoint_text = latest_checkpoint_path if latest_checkpoint_path else "-"
+        print(
+            "Episode {episode}: score={score}, maxTile={maxTile}, steps={steps}, won={won}, "
+            "avgScore={average:.2f}, checkpointsSaved={checkpoints}, latestCheckpoint={checkpoint}".format(
+                episode=episode_summary["episode"],
+                score=episode_summary["score"],
+                maxTile=episode_summary["maxTile"],
+                steps=episode_summary["steps"],
+                won=episode_summary["won"],
+                average=average_score,
+                checkpoints=checkpoints_saved,
+                checkpoint=checkpoint_text,
+            ),
+            flush=True,
+        )
 
     def _on_step(
         self,

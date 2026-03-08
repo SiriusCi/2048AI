@@ -88,6 +88,12 @@ class ReinforceCnnTrainer:
                     self.global_step = int(loaded_global_step)
                 except (TypeError, ValueError):
                     pass
+            optimizer_state = payload.get("optimizerStateDict")
+            if optimizer_state is not None:
+                try:
+                    self.optimizer.load_state_dict(optimizer_state)
+                except Exception:  # noqa: BLE001 - best-effort restore
+                    pass
         elif isinstance(payload, dict):
             state_dict = payload
         else:
@@ -252,9 +258,6 @@ class ReinforceCnnTrainer:
 
         try:
             for episode in range(1, episodes + 1):
-                if stop_event.is_set():
-                    break
-
                 if stop_event.is_set():
                     break
 

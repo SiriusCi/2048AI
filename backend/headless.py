@@ -141,7 +141,7 @@ class Headless2048Env:
         )
 
         invalid_action_penalty = self.invalid_action_penalty if not moved else 0.0
-        merge_value_bonus = self.merge_value_bonus_scale * float(merge_value_log2_counted_sum) * float(merge_count)
+        merge_value_bonus = self.merge_value_bonus_scale * float(merge_value_log2_counted_sum)
         merge_bonus = merge_value_bonus
 
         reward = score_delta + invalid_action_penalty + merge_bonus
