@@ -110,34 +110,44 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--play-only", action="store_true",
         help="Run inference only (no gradient updates)",
     )
+    parser.add_argument(
+        "--log-every", type=int, default=1,
+        help="Print episode info every N episodes (default: 1)",
+    )
     return parser.parse_args(argv)
 
 
-def _on_episode_end(
-    episode: int,
-    result: dict[str, Any],
-    metrics: dict[str, Any],
-) -> None:
-    score = int(result.get("score", 0))
-    max_tile = int(result.get("maxTile", 0))
-    steps = int(result.get("steps", 0))
-    won = bool(result.get("won", False))
-    avg_score = metrics.get("averageScore", 0.0)
-    loss = metrics.get("loss")
-    entropy = metrics.get("entropy")
-    global_step = metrics.get("globalStep", 0)
-    checkpoint_path = metrics.get("checkpointPath")
+def _make_episode_callback(log_every: int = 1):
+    def _on_episode_end(
+        episode: int,
+        result: dict[str, Any],
+        metrics: dict[str, Any],
+    ) -> None:
+        checkpoint_path = metrics.get("checkpointPath")
+        should_log = (episode % log_every == 0) or (episode == 1) or checkpoint_path
+        if not should_log:
+            return
 
-    loss_str = f"{loss:.4f}" if loss is not None else "N/A"
-    entropy_str = f"{entropy:.4f}" if entropy is not None else "N/A"
-    checkpoint_str = f" | ckpt={checkpoint_path}" if checkpoint_path else ""
+        score = int(result.get("score", 0))
+        max_tile = int(result.get("maxTile", 0))
+        steps = int(result.get("steps", 0))
+        won = bool(result.get("won", False))
+        avg_score = metrics.get("averageScore", 0.0)
+        loss = metrics.get("loss")
+        entropy = metrics.get("entropy")
+        global_step = metrics.get("globalStep", 0)
 
-    print(
-        f"Episode {episode}: score={score}, maxTile={max_tile}, steps={steps}, "
-        f"won={won}, avgScore={avg_score:.2f}, loss={loss_str}, "
-        f"entropy={entropy_str}, globalStep={global_step}{checkpoint_str}",
-        flush=True,
-    )
+        loss_str = f"{loss:.4f}" if loss is not None else "N/A"
+        entropy_str = f"{entropy:.4f}" if entropy is not None else "N/A"
+        checkpoint_str = f" | ckpt={checkpoint_path}" if checkpoint_path else ""
+
+        print(
+            f"Episode {episode}: score={score}, maxTile={max_tile}, steps={steps}, "
+            f"won={won}, avgScore={avg_score:.2f}, loss={loss_str}, "
+            f"entropy={entropy_str}, globalStep={global_step}{checkpoint_str}",
+            flush=True,
+        )
+    return _on_episode_end
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -225,7 +235,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_steps=max_steps,
         terminate_on_win=terminate_on_win,
         stop_event=stop_event,
-        on_episode_end=_on_episode_end,
+        on_episode_end=_make_episode_callback(args.log_every),
         tensorboard_log_dir=tensorboard_dir,
         tensorboard_run_name=tensorboard_run,
         checkpoint_every_episodes=checkpoint_every,
