@@ -1,0 +1,29 @@
+server:
+  host: 127.0.0.1
+  port: 8080
+
+sync:
+  # Backend waits this long after frontend sends step-done.
+  postAckDelaySec: 0.1
+
+trainingDefaults:
+  episodes: 100
+  workers: 1
+  seed: null
+  maxSteps: null
+  terminateOnWin: true
+
+  tensorboardLogDir: runs/2048
+  tensorboardRunName: null
+
+  checkpointEveryEpisodes: 0
+  checkpointDir: models/2048
+  checkpointPrefix: reinforce_cnn
+  loadModelPath: null
+  playOnly: false
+
+rl:
+  maxExponent: 15
+  gamma: 0.99
+  learningRate: 0.0003
+  entropyCoef: 0.001

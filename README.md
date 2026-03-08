@@ -41,7 +41,13 @@ The browser only sends input commands and renders the state returned by the serv
 From the project root:
 
 ```bash
-python server.py --host 127.0.0.1 --port 8080
+python server.py --config config.yaml
+```
+
+You can still override network binding from CLI:
+
+```bash
+python server.py --config config.yaml --host 127.0.0.1 --port 8080
 ```
 
 Then open:
@@ -56,13 +62,68 @@ The web page includes a **Headless Training** panel that talks to backend APIs:
 - `GET /api/train/status`
 - `POST /api/train/step-done` (frontend animation ack for strict step sync)
 
+`POST /api/train/start` also supports optional TensorBoard fields:
+- `tensorboardLogDir` (string, default: `runs/2048`)
+- `tensorboardRunName` (string, default: timestamped run name)
+
+Model persistence / loading fields:
+- `checkpointEveryEpisodes` (int, default: `0`, disabled when `0`)
+- `checkpointDir` (string, default: `models/2048`)
+- `checkpointPrefix` (string, default: `reinforce_cnn`)
+- `loadModelPath` (string, optional, load weights before run)
+- `playOnly` (bool, default: `false`; if `true`, runs policy without parameter updates)
+
 Training implementation details:
 - algorithm: REINFORCE (policy gradient)
 - state encoder: one-hot tensor `16 x 4 x 4` (`2^0` channel represents empty cells)
 - policy network: shallow CNN, `2x2` kernels, stride `1`, **no padding**, **no pooling**
 - current backend RL trainer supports `workers=1`
 - training runs in strict sync mode: backend waits each step until frontend reports animation finished
-- and then enforces an additional fixed 2-second delay before the next step
+- and then enforces an additional backend delay before the next step (configured by `sync.postAckDelaySec`)
+- TensorBoard scalars/histograms are recorded for step, episode, optimizer, and policy diagnostics
+- when `checkpointEveryEpisodes > 0`, model checkpoints are auto-saved as `*.pt`
+
+## YAML config
+Main tunables are centralized in `config.yaml`:
+
+- `server.host` / `server.port`
+- `sync.postAckDelaySec`
+- `trainingDefaults.*`:
+  `episodes`, `workers`, `seed`, `maxSteps`, `terminateOnWin`,
+  `tensorboardLogDir`, `tensorboardRunName`,
+  `checkpointEveryEpisodes`, `checkpointDir`, `checkpointPrefix`,
+  `loadModelPath`, `playOnly`
+- `rl.*`:
+  `maxExponent`, `gamma`, `learningRate`, `entropyCoef`
+
+Open TensorBoard while training:
+
+```bash
+tensorboard --logdir runs/2048
+```
+
+Example API payload to save every 10 episodes and load a prior model:
+
+```json
+{
+  "episodes": 100,
+  "workers": 1,
+  "checkpointEveryEpisodes": 10,
+  "checkpointDir": "models/2048",
+  "loadModelPath": "models/2048/reinforce_cnn_ep000100.pt"
+}
+```
+
+Example for model-only rollout (no training):
+
+```json
+{
+  "episodes": 20,
+  "workers": 1,
+  "playOnly": true,
+  "loadModelPath": "models/2048/reinforce_cnn_ep000100.pt"
+}
+```
 
 ## Headless mode (pure Python)
 You can run game episodes without starting the web server:

@@ -13,6 +13,7 @@ function BackendGameClient(InputManager, Actuator) {
   this.trainingAckTimer = null;
   this.lastRenderedFrameId = 0;
   this.lastAckedFrameId = 0;
+  this.trainingDefaultsApplied = false;
 
   this.inputManager.on("move", this.move.bind(this));
   this.inputManager.on("restart", this.restart.bind(this));
@@ -179,7 +180,11 @@ BackendGameClient.prototype.setupTrainingUI = function () {
   var workersInput = document.getElementById("training-workers");
   var seedInput = document.getElementById("training-seed");
   var maxStepsInput = document.getElementById("training-max-steps");
+  var checkpointEveryInput = document.getElementById("training-checkpoint-every");
+  var checkpointDirInput = document.getElementById("training-checkpoint-dir");
+  var loadModelPathInput = document.getElementById("training-load-model-path");
   var terminateCheckbox = document.getElementById("training-terminate-on-win");
+  var playOnlyCheckbox = document.getElementById("training-play-only");
 
   if (!startButton || !stopButton || !statusBlock || !boardBlock) {
     return;
@@ -194,7 +199,11 @@ BackendGameClient.prototype.setupTrainingUI = function () {
     workersInput: workersInput,
     seedInput: seedInput,
     maxStepsInput: maxStepsInput,
-    terminateCheckbox: terminateCheckbox
+    checkpointEveryInput: checkpointEveryInput,
+    checkpointDirInput: checkpointDirInput,
+    loadModelPathInput: loadModelPathInput,
+    terminateCheckbox: terminateCheckbox,
+    playOnlyCheckbox: playOnlyCheckbox
   };
 
   var self = this;
@@ -215,13 +224,25 @@ BackendGameClient.prototype.getTrainingPayload = function () {
   var workers = parseInt(this.trainingElements.workersInput.value || "1", 10);
   var seedText = this.trainingElements.seedInput.value;
   var maxStepsText = this.trainingElements.maxStepsInput.value;
+  var checkpointEvery = parseInt(
+    (this.trainingElements.checkpointEveryInput && this.trainingElements.checkpointEveryInput.value) || "0",
+    10
+  );
+  var checkpointDirText =
+    (this.trainingElements.checkpointDirInput && this.trainingElements.checkpointDirInput.value) || "";
+  var loadModelPathText =
+    (this.trainingElements.loadModelPathInput && this.trainingElements.loadModelPathInput.value) || "";
 
   var payload = {
     episodes: isNaN(episodes) ? 100 : episodes,
     workers: isNaN(workers) ? 1 : workers,
     seed: seedText === "" ? null : parseInt(seedText, 10),
     maxSteps: maxStepsText === "" ? null : parseInt(maxStepsText, 10),
-    terminateOnWin: this.trainingElements.terminateCheckbox.checked
+    terminateOnWin: this.trainingElements.terminateCheckbox.checked,
+    checkpointEveryEpisodes: isNaN(checkpointEvery) ? 0 : checkpointEvery,
+    checkpointDir: checkpointDirText === "" ? null : checkpointDirText,
+    loadModelPath: loadModelPathText === "" ? null : loadModelPathText,
+    playOnly: !!(this.trainingElements.playOnlyCheckbox && this.trainingElements.playOnlyCheckbox.checked)
   };
 
   if (isNaN(payload.seed)) {
@@ -480,6 +501,38 @@ BackendGameClient.prototype.updateTrainingStatus = function (status) {
     return;
   }
 
+  if (!this.trainingDefaultsApplied && status.trainingDefaults) {
+    var defaults = status.trainingDefaults;
+    if (this.trainingElements.episodesInput && defaults.episodes != null) {
+      this.trainingElements.episodesInput.value = String(defaults.episodes);
+    }
+    if (this.trainingElements.workersInput && defaults.workers != null) {
+      this.trainingElements.workersInput.value = String(defaults.workers);
+    }
+    if (this.trainingElements.seedInput) {
+      this.trainingElements.seedInput.value = defaults.seed == null ? "" : String(defaults.seed);
+    }
+    if (this.trainingElements.maxStepsInput) {
+      this.trainingElements.maxStepsInput.value = defaults.maxSteps == null ? "" : String(defaults.maxSteps);
+    }
+    if (this.trainingElements.checkpointEveryInput && defaults.checkpointEveryEpisodes != null) {
+      this.trainingElements.checkpointEveryInput.value = String(defaults.checkpointEveryEpisodes);
+    }
+    if (this.trainingElements.checkpointDirInput) {
+      this.trainingElements.checkpointDirInput.value = defaults.checkpointDir || "";
+    }
+    if (this.trainingElements.loadModelPathInput) {
+      this.trainingElements.loadModelPathInput.value = defaults.loadModelPath || "";
+    }
+    if (this.trainingElements.terminateCheckbox) {
+      this.trainingElements.terminateCheckbox.checked = !!defaults.terminateOnWin;
+    }
+    if (this.trainingElements.playOnlyCheckbox) {
+      this.trainingElements.playOnlyCheckbox.checked = !!defaults.playOnly;
+    }
+    this.trainingDefaultsApplied = true;
+  }
+
   var wasRunning = this.isTrainingRunning;
   var running = !!status.running;
   this.isTrainingRunning = running;
@@ -507,7 +560,17 @@ BackendGameClient.prototype.updateTrainingStatus = function (status) {
     "ackedFrame: " + ackedFrameId,
     "awaitingAck: " + (status.awaitingAck ? "yes" : "no"),
     "coolingDown: " + (status.coolingDown ? "yes" : "no"),
-    "postAckDelaySec: " + (status.postAckDelaySec == null ? "-" : status.postAckDelaySec)
+    "postAckDelaySec: " + (status.postAckDelaySec == null ? "-" : status.postAckDelaySec),
+    "tensorboardEnabled: " + (status.tensorboardEnabled ? "yes" : "no"),
+    "tensorboardLogDir: " + (status.tensorboardLogDir || "-"),
+    "tensorboardRunDir: " + (status.tensorboardRunDir || "-"),
+    "playOnly: " + (status.playOnly ? "yes" : "no"),
+    "checkpointEveryEpisodes: " + (status.checkpointEveryEpisodes == null ? "-" : status.checkpointEveryEpisodes),
+    "checkpointDir: " + (status.checkpointDir || "-"),
+    "checkpointsSaved: " + (status.checkpointsSaved == null ? "-" : status.checkpointsSaved),
+    "latestCheckpointPath: " + (status.latestCheckpointPath || "-"),
+    "loadModelPath: " + (status.loadModelPath || "-"),
+    "loadedModelPath: " + (status.loadedModelPath || "-")
   ];
 
   if (status.lastEpisode) {
@@ -520,6 +583,8 @@ BackendGameClient.prototype.updateTrainingStatus = function (status) {
 
   if (status.error) {
     lines.push("error: " + status.error);
+  } else if (status.tensorboardWarning) {
+    lines.push("tensorboardWarning: " + status.tensorboardWarning);
   } else if (status.stopped && !running) {
     lines.push("status: stopped");
   } else if (!running && completed === requested && requested > 0) {

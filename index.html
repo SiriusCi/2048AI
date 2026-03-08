@@ -88,7 +88,18 @@
         <input id="training-max-steps" type="number" min="1" placeholder="optional">
       </p>
       <p>
+        Checkpoint every N episodes
+        <input id="training-checkpoint-every" type="number" min="0" value="0">
+        Checkpoint dir
+        <input id="training-checkpoint-dir" type="text" value="models/2048">
+      </p>
+      <p>
+        Load model path
+        <input id="training-load-model-path" type="text" placeholder="optional .pt">
+      </p>
+      <p>
         <label><input id="training-terminate-on-win" type="checkbox" checked> terminate_on_win</label>
+        <label><input id="training-play-only" type="checkbox"> play_only</label>
       </p>
       <p>
         <button id="training-start-button">Start Training</button>

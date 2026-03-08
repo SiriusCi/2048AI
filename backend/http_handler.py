@@ -58,18 +58,30 @@ class GameRequestHandler(SimpleHTTPRequestHandler):
                 self._send_json({"error": "Invalid JSON body"}, HTTPStatus.BAD_REQUEST)
                 return
 
-            episodes = body.get("episodes", 100)
-            workers = body.get("workers", 1)
-            seed = body.get("seed", None)
-            max_steps = body.get("maxSteps", None)
-            terminate_on_win = body.get("terminateOnWin", True)
+            defaults = self.service.training_start_defaults()
+            episodes = body.get("episodes", defaults.get("episodes"))
+            workers = body.get("workers", defaults.get("workers"))
+            seed = body.get("seed", defaults.get("seed"))
+            max_steps = body.get("maxSteps", defaults.get("maxSteps"))
+            terminate_on_win = body.get("terminateOnWin", defaults.get("terminateOnWin"))
+            tensorboard_log_dir = body.get("tensorboardLogDir", defaults.get("tensorboardLogDir"))
+            tensorboard_run_name = body.get("tensorboardRunName", defaults.get("tensorboardRunName"))
+            checkpoint_every_episodes = body.get(
+                "checkpointEveryEpisodes",
+                defaults.get("checkpointEveryEpisodes"),
+            )
+            checkpoint_dir = body.get("checkpointDir", defaults.get("checkpointDir"))
+            checkpoint_prefix = body.get("checkpointPrefix", defaults.get("checkpointPrefix"))
+            load_model_path = body.get("loadModelPath", defaults.get("loadModelPath"))
+            play_only = body.get("playOnly", defaults.get("playOnly"))
 
             try:
                 episodes = int(episodes)
                 workers = int(workers)
+                checkpoint_every_episodes = int(checkpoint_every_episodes)
             except (TypeError, ValueError):
                 self._send_json(
-                    {"error": "Fields 'episodes' and 'workers' must be integers"},
+                    {"error": "Fields 'episodes', 'workers' and 'checkpointEveryEpisodes' must be integers"},
                     HTTPStatus.BAD_REQUEST,
                 )
                 return
@@ -101,11 +113,51 @@ class GameRequestHandler(SimpleHTTPRequestHandler):
                 )
                 return
 
+            if tensorboard_log_dir is not None and not isinstance(tensorboard_log_dir, str):
+                self._send_json(
+                    {"error": "Field 'tensorboardLogDir' must be a string or null"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            if tensorboard_run_name is not None and not isinstance(tensorboard_run_name, str):
+                self._send_json(
+                    {"error": "Field 'tensorboardRunName' must be a string or null"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            if checkpoint_dir is not None and not isinstance(checkpoint_dir, str):
+                self._send_json(
+                    {"error": "Field 'checkpointDir' must be a string or null"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            if not isinstance(checkpoint_prefix, str) or checkpoint_prefix.strip() == "":
+                self._send_json(
+                    {"error": "Field 'checkpointPrefix' must be a non-empty string"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            if load_model_path is not None and not isinstance(load_model_path, str):
+                self._send_json(
+                    {"error": "Field 'loadModelPath' must be a string or null"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            if not isinstance(play_only, bool):
+                self._send_json(
+                    {"error": "Field 'playOnly' must be true or false"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+
             if episodes <= 0:
                 self._send_json({"error": "Field 'episodes' must be > 0"}, HTTPStatus.BAD_REQUEST)
                 return
             if workers < 0:
                 self._send_json({"error": "Field 'workers' must be >= 0"}, HTTPStatus.BAD_REQUEST)
+                return
+            if checkpoint_every_episodes < 0:
+                self._send_json({"error": "Field 'checkpointEveryEpisodes' must be >= 0"}, HTTPStatus.BAD_REQUEST)
                 return
 
             try:
@@ -115,6 +167,13 @@ class GameRequestHandler(SimpleHTTPRequestHandler):
                     seed=seed,
                     max_steps=max_steps,
                     terminate_on_win=terminate_on_win,
+                    tensorboard_log_dir=tensorboard_log_dir,
+                    tensorboard_run_name=tensorboard_run_name,
+                    checkpoint_every_episodes=checkpoint_every_episodes,
+                    checkpoint_dir=checkpoint_dir,
+                    checkpoint_prefix=checkpoint_prefix,
+                    load_model_path=load_model_path,
+                    play_only=play_only,
                 )
             except RuntimeError as error:
                 self._send_json({"error": str(error)}, HTTPStatus.CONFLICT)

@@ -15,13 +15,30 @@ from .rl import ReinforceCnnConfig, ReinforceCnnTrainer
 class TrainingManager:
     """Manage asynchronous RL training jobs for frontend monitoring."""
 
-    POST_ACK_DELAY_SEC = 2.0
+    POST_ACK_DELAY_SEC = 0.1
+    DEFAULT_TENSORBOARD_LOG_DIR = os.path.join("runs", "2048")
+    DEFAULT_CHECKPOINT_DIR = os.path.join("models", "2048")
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        rl_config: ReinforceCnnConfig | None = None,
+        post_ack_delay_sec: float | None = None,
+        default_tensorboard_log_dir: str | None = DEFAULT_TENSORBOARD_LOG_DIR,
+        default_checkpoint_dir: str | None = DEFAULT_CHECKPOINT_DIR,
+    ) -> None:
         self._lock = threading.Lock()
         self._sync_cv = threading.Condition(self._lock)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._rl_config = rl_config or ReinforceCnnConfig()
+        self._post_ack_delay_sec = (
+            self.POST_ACK_DELAY_SEC if post_ack_delay_sec is None else float(post_ack_delay_sec)
+        )
+        if self._post_ack_delay_sec < 0:
+            raise ValueError("post_ack_delay_sec must be >= 0")
+        self._default_tensorboard_log_dir = default_tensorboard_log_dir
+        self._default_checkpoint_dir = default_checkpoint_dir
         self._status = self._new_status()
         self._latest_model_state: dict[str, Any] | None = None
 
@@ -34,6 +51,7 @@ class TrainingManager:
             "algorithm": "reinforce",
             "network": "cnn-3layer-no-padding",
             "encoding": "onehot-16x4x4",
+            "playOnly": False,
             "requestedEpisodes": 0,
             "completedEpisodes": 0,
             "currentEpisode": 0,
@@ -54,7 +72,19 @@ class TrainingManager:
             "ackedFrameId": 0,
             "awaitingAck": False,
             "coolingDown": False,
-            "postAckDelaySec": self.POST_ACK_DELAY_SEC,
+            "postAckDelaySec": self._post_ack_delay_sec,
+            "tensorboardEnabled": False,
+            "tensorboardLogDir": self._default_tensorboard_log_dir,
+            "tensorboardRunName": None,
+            "tensorboardRunDir": None,
+            "tensorboardWarning": None,
+            "checkpointEveryEpisodes": 0,
+            "checkpointDir": self._default_checkpoint_dir,
+            "checkpointPrefix": "reinforce_cnn",
+            "checkpointsSaved": 0,
+            "latestCheckpointPath": None,
+            "loadModelPath": None,
+            "loadedModelPath": None,
             "startedAt": None,
             "finishedAt": None,
         }
@@ -71,15 +101,29 @@ class TrainingManager:
         seed: int | None,
         max_steps: int | None,
         terminate_on_win: bool,
+        tensorboard_log_dir: str | None = None,
+        tensorboard_run_name: str | None = None,
+        checkpoint_every_episodes: int = 0,
+        checkpoint_dir: str | None = None,
+        checkpoint_prefix: str = "reinforce_cnn",
+        load_model_path: str | None = None,
+        play_only: bool = False,
     ) -> dict[str, Any]:
         if episodes <= 0:
             raise ValueError("episodes must be greater than 0")
         if workers < 0:
             raise ValueError("workers must be >= 0")
+        if checkpoint_every_episodes < 0:
+            raise ValueError("checkpoint_every_episodes must be >= 0")
 
         resolved_workers = (os.cpu_count() or 1) if workers == 0 else workers
         if resolved_workers != 1:
             raise ValueError("CNN policy-gradient training currently supports workers=1")
+
+        resolved_tensorboard_log_dir = (
+            self._default_tensorboard_log_dir if tensorboard_log_dir is None else tensorboard_log_dir
+        )
+        resolved_checkpoint_dir = self._default_checkpoint_dir if checkpoint_dir is None else checkpoint_dir
 
         with self._sync_cv:
             if self._status["running"]:
@@ -90,18 +134,38 @@ class TrainingManager:
             self._status.update(
                 {
                     "running": True,
+                    "algorithm": "reinforce-play" if play_only else "reinforce",
+                    "playOnly": play_only,
                     "requestedEpisodes": episodes,
                     "workers": resolved_workers,
                     "seed": seed,
                     "maxSteps": max_steps,
                     "terminateOnWin": terminate_on_win,
+                    "tensorboardLogDir": resolved_tensorboard_log_dir,
+                    "tensorboardRunName": tensorboard_run_name,
+                    "checkpointEveryEpisodes": checkpoint_every_episodes,
+                    "checkpointDir": resolved_checkpoint_dir,
+                    "checkpointPrefix": checkpoint_prefix,
+                    "loadModelPath": load_model_path,
                     "startedAt": time.time(),
                 }
             )
 
             self._thread = threading.Thread(
                 target=self._run_job,
-                args=(episodes, seed, max_steps, terminate_on_win),
+                args=(
+                    episodes,
+                    seed,
+                    max_steps,
+                    terminate_on_win,
+                    resolved_tensorboard_log_dir,
+                    tensorboard_run_name,
+                    checkpoint_every_episodes,
+                    resolved_checkpoint_dir,
+                    checkpoint_prefix,
+                    load_model_path,
+                    play_only,
+                ),
                 daemon=True,
             )
             self._thread.start()
@@ -173,6 +237,10 @@ class TrainingManager:
             self._status["entropy"] = metrics.get("entropy")
             self._status["globalStep"] = int(metrics.get("globalStep", self._status["globalStep"]))
             self._status["currentEpisode"] = int(episode)
+            if metrics.get("checkpointPath") is not None:
+                self._status["latestCheckpointPath"] = metrics.get("checkpointPath")
+            if metrics.get("checkpointsSaved") is not None:
+                self._status["checkpointsSaved"] = int(metrics.get("checkpointsSaved", 0))
 
     def _on_step(
         self,
@@ -208,7 +276,7 @@ class TrainingManager:
             self._status["coolingDown"] = True
             self._sync_cv.notify_all()
 
-            deadline = time.time() + self.POST_ACK_DELAY_SEC
+            deadline = time.time() + self._post_ack_delay_sec
             while not self._stop_event.is_set() and self._status["running"]:
                 remaining = deadline - time.time()
                 if remaining <= 0:
@@ -224,10 +292,17 @@ class TrainingManager:
         seed: int | None,
         max_steps: int | None,
         terminate_on_win: bool,
+        tensorboard_log_dir: str | None,
+        tensorboard_run_name: str | None,
+        checkpoint_every_episodes: int,
+        checkpoint_dir: str | None,
+        checkpoint_prefix: str,
+        load_model_path: str | None,
+        play_only: bool,
     ) -> None:
         error_message: str | None = None
         try:
-            trainer = ReinforceCnnTrainer(ReinforceCnnConfig(), seed=seed)
+            trainer = ReinforceCnnTrainer(self._rl_config, seed=seed)
             summary = trainer.train(
                 episodes=episodes,
                 max_steps=max_steps,
@@ -235,6 +310,13 @@ class TrainingManager:
                 stop_event=self._stop_event,
                 on_step=self._on_step,
                 on_episode_end=self._on_episode_end,
+                tensorboard_log_dir=tensorboard_log_dir,
+                tensorboard_run_name=tensorboard_run_name,
+                checkpoint_every_episodes=checkpoint_every_episodes,
+                checkpoint_dir=checkpoint_dir,
+                checkpoint_prefix=checkpoint_prefix,
+                load_model_path=load_model_path,
+                play_only=play_only,
             )
             self._latest_model_state = summary.get("modelStateDict")
             with self._lock:
@@ -246,6 +328,17 @@ class TrainingManager:
                     int(self._status["maxTileSeen"]),
                     int(summary.get("maxTileSeen", 0)),
                 )
+                self._status["tensorboardEnabled"] = bool(summary.get("tensorboardEnabled", False))
+                self._status["tensorboardRunDir"] = summary.get("tensorboardRunDir")
+                self._status["tensorboardWarning"] = summary.get("tensorboardWarning")
+                self._status["playOnly"] = bool(summary.get("playOnly", self._status["playOnly"]))
+                self._status["loadedModelPath"] = summary.get("loadedModelPath")
+                self._status["checkpointEveryEpisodes"] = int(
+                    summary.get("checkpointEveryEpisodes", self._status["checkpointEveryEpisodes"])
+                )
+                self._status["checkpointDir"] = summary.get("checkpointDir", self._status["checkpointDir"])
+                self._status["checkpointsSaved"] = int(summary.get("checkpointsSaved", self._status["checkpointsSaved"]))
+                self._status["latestCheckpointPath"] = summary.get("latestCheckpointPath")
         except Exception as error:  # noqa: BLE001
             error_message = str(error)
         finally:
@@ -263,10 +356,41 @@ class TrainingManager:
 class GameService:
     """Thread-safe wrapper around a single game instance."""
 
-    def __init__(self) -> None:
+    DEFAULT_TRAINING_START_DEFAULTS: dict[str, Any] = {
+        "episodes": 100,
+        "workers": 1,
+        "seed": None,
+        "maxSteps": None,
+        "terminateOnWin": True,
+        "tensorboardLogDir": TrainingManager.DEFAULT_TENSORBOARD_LOG_DIR,
+        "tensorboardRunName": None,
+        "checkpointEveryEpisodes": 0,
+        "checkpointDir": TrainingManager.DEFAULT_CHECKPOINT_DIR,
+        "checkpointPrefix": "reinforce_cnn",
+        "loadModelPath": None,
+        "playOnly": False,
+    }
+
+    def __init__(
+        self,
+        *,
+        training_defaults: dict[str, Any] | None = None,
+        rl_config: ReinforceCnnConfig | None = None,
+        post_ack_delay_sec: float | None = None,
+        default_tensorboard_log_dir: str | None = None,
+        default_checkpoint_dir: str | None = None,
+    ) -> None:
         self._lock = threading.Lock()
         self._game = Game2048()
-        self._training = TrainingManager()
+        self._training_defaults = copy.deepcopy(self.DEFAULT_TRAINING_START_DEFAULTS)
+        if training_defaults is not None:
+            self._training_defaults.update(training_defaults)
+        self._training = TrainingManager(
+            rl_config=rl_config,
+            post_ack_delay_sec=post_ack_delay_sec,
+            default_tensorboard_log_dir=default_tensorboard_log_dir,
+            default_checkpoint_dir=default_checkpoint_dir,
+        )
 
     def state(self) -> dict[str, Any]:
         with self._lock:
@@ -293,7 +417,12 @@ class GameService:
             return state
 
     def training_status(self) -> dict[str, Any]:
-        return self._training.status()
+        status = self._training.status()
+        status["trainingDefaults"] = self.training_start_defaults()
+        return status
+
+    def training_start_defaults(self) -> dict[str, Any]:
+        return copy.deepcopy(self._training_defaults)
 
     def training_start(
         self,
@@ -303,6 +432,13 @@ class GameService:
         seed: int | None,
         max_steps: int | None,
         terminate_on_win: bool,
+        tensorboard_log_dir: str | None = None,
+        tensorboard_run_name: str | None = None,
+        checkpoint_every_episodes: int = 0,
+        checkpoint_dir: str | None = None,
+        checkpoint_prefix: str = "reinforce_cnn",
+        load_model_path: str | None = None,
+        play_only: bool = False,
     ) -> dict[str, Any]:
         return self._training.start(
             episodes=episodes,
@@ -310,6 +446,13 @@ class GameService:
             seed=seed,
             max_steps=max_steps,
             terminate_on_win=terminate_on_win,
+            tensorboard_log_dir=tensorboard_log_dir,
+            tensorboard_run_name=tensorboard_run_name,
+            checkpoint_every_episodes=checkpoint_every_episodes,
+            checkpoint_dir=checkpoint_dir,
+            checkpoint_prefix=checkpoint_prefix,
+            load_model_path=load_model_path,
+            play_only=play_only,
         )
 
     def training_stop(self) -> dict[str, Any]:
