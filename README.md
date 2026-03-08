@@ -94,7 +94,8 @@ Main tunables are centralized in `config.yaml`:
   `checkpointEveryEpisodes`, `checkpointDir`, `checkpointPrefix`,
   `loadModelPath`, `playOnly`
 - `rl.*`:
-  `maxExponent`, `gamma`, `learningRate`, `entropyCoef`
+  `maxExponent`, `gamma`, `learningRate`, `entropyCoef`,
+  `invalidActionPenalty`, `mergeValueBonusScale`
 
 Open TensorBoard while training:
 

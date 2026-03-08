@@ -26,14 +26,38 @@ class Headless2048Env:
         seed: int | None = None,
         max_steps: int | None = None,
         terminate_on_win: bool = True,
+        invalid_action_penalty: float = -1.0,
+        merge_value_bonus_scale: float = 1.0,
     ) -> None:
         self.game = Game2048(size=size, start_tiles=start_tiles, seed=seed)
         self.max_steps = max_steps
         self.terminate_on_win = terminate_on_win
+        self.invalid_action_penalty = float(invalid_action_penalty)
+        self.merge_value_bonus_scale = float(merge_value_bonus_scale)
         self.steps = 0
 
         if not self.terminate_on_win:
             self.game.keep_going()
+
+    @staticmethod
+    def _count_empty_cells(board: list[list[int]]) -> int:
+        return sum(1 for row in board for value in row if int(value) == 0)
+
+    @staticmethod
+    def _extract_merge_values(animation_grid: dict[str, Any]) -> list[float]:
+        values: list[float] = []
+        cells = animation_grid.get("cells", [])
+        for column in cells:
+            for tile in column or []:
+                if not tile:
+                    continue
+                merged_from = tile.get("mergedFrom")
+                if not merged_from:
+                    continue
+                merged_value = float(tile.get("value", 0.0))
+                if merged_value > 0:
+                    values.append(merged_value)
+        return values
 
     def reset(self, seed: int | None = None) -> dict[str, Any]:
         if seed is not None:
@@ -83,10 +107,12 @@ class Headless2048Env:
             "movableActions": self.movable_actions(),
         }
 
-    def step(self, action: int) -> tuple[dict[str, Any], int, bool, bool, dict[str, Any]]:
+    def step(self, action: int) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
         if action not in self.ACTIONS:
             raise ValueError("Action must be one of 0, 1, 2, 3")
 
+        board_before = self.game.board()
+        empty_cells_before = self._count_empty_cells(board_before)
         previous_score = self.game.score
         moved = self.game.move(action)
         animation_grid = self.game.consume_last_animation_grid()
@@ -97,16 +123,50 @@ class Headless2048Env:
         if self.game.won and not self.terminate_on_win and not self.game.keep_playing:
             self.game.keep_going()
 
-        reward = self.game.score - previous_score
+        score_delta = float(self.game.score - previous_score)
+        had_merge = score_delta > 0.0
+        board_after = self.game.board()
+        empty_cells_after = self._count_empty_cells(board_after)
+        empty_cells_reduced = max(0, empty_cells_before - empty_cells_after)
+        merge_values = self._extract_merge_values(animation_grid)
+        merge_count = len(merge_values)
+        merge_value_count_map: dict[int, int] = {}
+        for value in merge_values:
+            key = int(value)
+            merge_value_count_map[key] = merge_value_count_map.get(key, 0) + 1
+        merge_value_log2_counted_sum = sum(
+            math.log2(float(value)) * float(count)
+            for value, count in merge_value_count_map.items()
+            if value > 0
+        )
+
+        invalid_action_penalty = self.invalid_action_penalty if not moved else 0.0
+        merge_value_bonus = self.merge_value_bonus_scale * float(merge_value_log2_counted_sum) * float(merge_count)
+        merge_bonus = merge_value_bonus
+
+        reward = score_delta + invalid_action_penalty + merge_bonus
         terminated = self.game.over or (self.game.won and self.terminate_on_win)
         truncated = self.max_steps is not None and self.steps >= self.max_steps
 
         observation = self.observation()
         info = {
             "moved": moved,
+            "hadMerge": had_merge,
             "action": action,
             "score": self.game.score,
             "steps": self.steps,
+            "scoreDelta": score_delta,
+            "invalidActionPenalty": invalid_action_penalty,
+            "mergeCount": merge_count,
+            "mergeValues": merge_values,
+            "mergeValueCountMap": merge_value_count_map,
+            "mergeValueLog2CountedSum": merge_value_log2_counted_sum,
+            "mergeValueBonus": merge_value_bonus,
+            "mergeBonus": merge_bonus,
+            "emptyCellsBefore": empty_cells_before,
+            "emptyCellsAfter": empty_cells_after,
+            "emptyCellsReduced": empty_cells_reduced,
+            "reward": reward,
             "animationGrid": animation_grid,
             "legalActions": observation["legalActions"],
             "movableActions": observation["movableActions"],

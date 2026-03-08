@@ -39,6 +39,8 @@ DEFAULT_RUNTIME_CONFIG: dict[str, Any] = {
         "gamma": 0.99,
         "learningRate": 3e-4,
         "entropyCoef": 1e-3,
+        "invalidActionPenalty": -1.0,
+        "mergeValueBonusScale": 1.0,
     },
 }
 
@@ -133,6 +135,8 @@ def load_runtime_config(path: str | Path = "config.yaml") -> dict[str, Any]:
     training_defaults = merged.get("trainingDefaults", {})
     rl = merged.get("rl", {})
 
+    merge_value_bonus_scale_raw = rl.get("mergeValueBonusScale", rl.get("mergeEmptyReductionBonus", 1.0))
+
     normalized: dict[str, Any] = {
         "configPath": str(config_path),
         "server": {
@@ -185,6 +189,12 @@ def load_runtime_config(path: str | Path = "config.yaml") -> dict[str, Any]:
             "gamma": _as_float(rl.get("gamma"), field="rl.gamma", min_value=0.0),
             "learningRate": _as_float(rl.get("learningRate"), field="rl.learningRate", min_value=0.0),
             "entropyCoef": _as_float(rl.get("entropyCoef"), field="rl.entropyCoef", min_value=0.0),
+            "invalidActionPenalty": _as_float(rl.get("invalidActionPenalty"), field="rl.invalidActionPenalty"),
+            "mergeValueBonusScale": _as_float(
+                merge_value_bonus_scale_raw,
+                field="rl.mergeValueBonusScale",
+                min_value=0.0,
+            ),
         },
     }
     return normalized

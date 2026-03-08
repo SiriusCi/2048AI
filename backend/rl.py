@@ -28,6 +28,8 @@ class ReinforceCnnConfig:
     gamma: float = 0.99
     learning_rate: float = 3e-4
     entropy_coef: float = 1e-3
+    invalid_action_penalty: float = -1.0
+    merge_value_bonus_scale: float = 1.0
 
 
 class OneHotCnnPolicyNet(nn.Module):
@@ -116,6 +118,8 @@ class ReinforceCnnTrainer:
                 "gamma": self.config.gamma,
                 "learningRate": self.config.learning_rate,
                 "entropyCoef": self.config.entropy_coef,
+                "invalidActionPenalty": self.config.invalid_action_penalty,
+                "mergeValueBonusScale": self.config.merge_value_bonus_scale,
             },
             "modelStateDict": self.policy_net.state_dict(),
             "optimizerStateDict": self.optimizer.state_dict(),
@@ -225,6 +229,8 @@ class ReinforceCnnTrainer:
                 "gamma": self.config.gamma,
                 "learningRate": self.config.learning_rate,
                 "entropyCoef": self.config.entropy_coef,
+                "invalidActionPenalty": self.config.invalid_action_penalty,
+                "mergeValueBonusScale": self.config.merge_value_bonus_scale,
                 "episodes": episodes,
                 "maxSteps": max_steps,
                 "terminateOnWin": terminate_on_win,
@@ -257,6 +263,8 @@ class ReinforceCnnTrainer:
                     seed=env_seed,
                     max_steps=max_steps,
                     terminate_on_win=terminate_on_win,
+                    invalid_action_penalty=self.config.invalid_action_penalty,
+                    merge_value_bonus_scale=self.config.merge_value_bonus_scale,
                 )
                 obs = env.reset(seed=env_seed)
                 terminated = False
@@ -299,7 +307,25 @@ class ReinforceCnnTrainer:
                         movable_actions = step_info.get("movableActions", [])
                         raw_board = obs.get("rawBoard", [])
                         empty_cells = sum(1 for row in raw_board for value in row if int(value) == 0)
+                        invalid_action_penalty = float(step_info.get("invalidActionPenalty", 0.0))
+                        merge_bonus = float(step_info.get("mergeBonus", 0.0))
+                        merge_value_bonus = float(step_info.get("mergeValueBonus", 0.0))
+                        merge_count = float(step_info.get("mergeCount", 0.0))
+                        merge_value_log2_counted_sum = float(step_info.get("mergeValueLog2CountedSum", 0.0))
+                        score_delta = float(step_info.get("scoreDelta", reward))
+                        empty_cells_reduced = float(step_info.get("emptyCellsReduced", 0.0))
                         writer.add_scalar("train/step_reward", float(reward), self.global_step)
+                        writer.add_scalar("reward/score_delta", score_delta, self.global_step)
+                        writer.add_scalar("reward/invalid_action_penalty", invalid_action_penalty, self.global_step)
+                        writer.add_scalar("reward/merge_bonus", merge_bonus, self.global_step)
+                        writer.add_scalar("reward/merge_value_bonus", merge_value_bonus, self.global_step)
+                        writer.add_scalar("reward/merge_count", merge_count, self.global_step)
+                        writer.add_scalar(
+                            "reward/merge_value_log2_counted_sum",
+                            merge_value_log2_counted_sum,
+                            self.global_step,
+                        )
+                        writer.add_scalar("reward/empty_cells_reduced", empty_cells_reduced, self.global_step)
                         writer.add_scalar("train/episode_return_running", total_reward, self.global_step)
                         writer.add_scalar("train/score", float(obs.get("score", 0)), self.global_step)
                         writer.add_scalar("train/max_tile", float(obs.get("maxTile", 0)), self.global_step)

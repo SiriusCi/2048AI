@@ -16,7 +16,7 @@ trainingDefaults:
   tensorboardLogDir: runs/2048
   tensorboardRunName: null
 
-  checkpointEveryEpisodes: 0
+  checkpointEveryEpisodes: 20
   checkpointDir: models/2048
   checkpointPrefix: reinforce_cnn
   loadModelPath: null
@@ -27,3 +27,5 @@ rl:
   gamma: 0.99
   learningRate: 0.0003
   entropyCoef: 0.001
+  invalidActionPenalty: -10.0
+  mergeValueBonusScale: 1.0
