@@ -27,33 +27,45 @@ class ReinforceCnnConfig:
     max_exponent: int = 15
     gamma: float = 0.99
     learning_rate: float = 3e-4
-    entropy_coef: float = 1e-3
+    entropy_coef: float = 1e-2
+    value_coef: float = 0.5
+    max_grad_norm: float = 0.5
     invalid_action_penalty: float = -1.0
     merge_value_bonus_scale: float = 1.0
 
 
 class OneHotCnnPolicyNet(nn.Module):
-    """Shallow CNN policy net for 4x4 board with no padding."""
+    """Shared-backbone actor-critic CNN for 4x4 board with no padding."""
 
     def __init__(self, in_channels: int, num_actions: int = 4) -> None:
         super().__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(in_channels, 64, kernel_size=2, stride=1, padding=0),
-            nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=2, stride=1, padding=0),
+            nn.Conv2d(in_channels, 128, kernel_size=2, stride=1, padding=0),
             nn.ReLU(),
             nn.Conv2d(128, 128, kernel_size=2, stride=1, padding=0),
             nn.ReLU(),
-        )
-        self.head = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=2, stride=1, padding=0),
+            nn.ReLU(),
             nn.Flatten(),
+        )
+        self.policy_head = nn.Sequential(
             nn.Linear(128, 128),
             nn.ReLU(),
             nn.Linear(128, num_actions),
         )
+        self.value_head = nn.Sequential(
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+        )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.head(self.features(x))
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        features = self.features(x)
+        return self.policy_head(features), self.value_head(features)
+
+    def policy(self, x: torch.Tensor) -> torch.Tensor:
+        features = self.features(x)
+        return self.policy_head(features)
 
 
 class ReinforceCnnTrainer:
@@ -124,6 +136,8 @@ class ReinforceCnnTrainer:
                 "gamma": self.config.gamma,
                 "learningRate": self.config.learning_rate,
                 "entropyCoef": self.config.entropy_coef,
+                "valueCoef": self.config.value_coef,
+                "maxGradNorm": self.config.max_grad_norm,
                 "invalidActionPenalty": self.config.invalid_action_penalty,
                 "mergeValueBonusScale": self.config.merge_value_bonus_scale,
             },
@@ -177,13 +191,7 @@ class ReinforceCnnTrainer:
             running = float(reward) + self.config.gamma * running
             returns.append(running)
         returns.reverse()
-        values = torch.tensor(returns, dtype=torch.float32, device=self.device)
-        if values.numel() > 1:
-            mean = values.mean()
-            std = values.std(unbiased=False)
-            if std.item() > 1e-6:
-                values = (values - mean) / (std + 1e-8)
-        return values
+        return torch.tensor(returns, dtype=torch.float32, device=self.device)
 
     def train(
         self,
@@ -235,6 +243,8 @@ class ReinforceCnnTrainer:
                 "gamma": self.config.gamma,
                 "learningRate": self.config.learning_rate,
                 "entropyCoef": self.config.entropy_coef,
+                "valueCoef": self.config.value_coef,
+                "maxGradNorm": self.config.max_grad_norm,
                 "invalidActionPenalty": self.config.invalid_action_penalty,
                 "mergeValueBonusScale": self.config.merge_value_bonus_scale,
                 "episodes": episodes,
@@ -276,6 +286,7 @@ class ReinforceCnnTrainer:
 
                 log_probs: list[torch.Tensor] = []
                 entropies: list[torch.Tensor] = []
+                values: list[torch.Tensor] = []
                 rewards: list[float] = []
                 actions: list[int] = []
                 moved_count = 0
@@ -285,7 +296,16 @@ class ReinforceCnnTrainer:
                         break
 
                     state_tensor = self._encode_state(obs["state"]).unsqueeze(0).to(self.device)
-                    logits = self.policy_net(state_tensor)
+                    logits, value = self.policy_net(state_tensor)
+
+                    # Mask invalid actions: set logits of unmovable actions to -inf
+                    movable = obs.get("movableActions", [0, 1, 2, 3])
+                    if movable:
+                        mask = torch.full_like(logits, float("-inf"))
+                        for a in movable:
+                            mask[0, a] = 0.0
+                        logits = logits + mask
+
                     dist = Categorical(logits=logits)
                     action = dist.sample()
                     action_index = int(action.item())
@@ -294,6 +314,7 @@ class ReinforceCnnTrainer:
                     log_probs.append(dist.log_prob(action))
                     entropy_step = dist.entropy()
                     entropies.append(entropy_step)
+                    values.append(value.squeeze(-1))
                     rewards.append(float(reward))
                     actions.append(action_index)
 
@@ -366,6 +387,7 @@ class ReinforceCnnTrainer:
 
                 grad_norm = 0.0
                 policy_loss_value = 0.0
+                value_loss_value = 0.0
                 return_mean = 0.0
                 return_std = 0.0
 
@@ -377,25 +399,36 @@ class ReinforceCnnTrainer:
                 else:
                     returns = self._discounted_returns(rewards)
                     log_probs_tensor = torch.stack(log_probs)
+                    values_tensor = torch.cat(values)
 
-                    policy_loss = -(log_probs_tensor * returns).sum()
-                    loss = policy_loss - self.config.entropy_coef * entropy_tensor
+                    advantages = returns - values_tensor.detach()
+                    if advantages.numel() > 1:
+                        adv_std = advantages.std(unbiased=False)
+                        if adv_std.item() > 1e-6:
+                            advantages = (advantages - advantages.mean()) / (adv_std + 1e-8)
+                    policy_loss = -(log_probs_tensor * advantages).mean()
+                    value_loss = nn.functional.huber_loss(values_tensor, returns)
+                    loss = (
+                        policy_loss
+                        + self.config.value_coef * value_loss
+                        - self.config.entropy_coef * entropy_tensor
+                    )
 
                     self.optimizer.zero_grad(set_to_none=True)
                     loss.backward()
 
-                    grad_norm_sq = 0.0
-                    for parameter in self.policy_net.parameters():
-                        if parameter.grad is None:
-                            continue
-                        param_norm = float(parameter.grad.detach().data.norm(2).item())
-                        grad_norm_sq += param_norm * param_norm
-                    grad_norm = grad_norm_sq ** 0.5
+                    grad_norm = float(
+                        nn.utils.clip_grad_norm_(
+                            self.policy_net.parameters(),
+                            self.config.max_grad_norm,
+                        ).item()
+                    )
 
                     self.optimizer.step()
 
                     self.last_loss = float(loss.detach().cpu().item())
                     policy_loss_value = float(policy_loss.detach().cpu().item())
+                    value_loss_value = float(value_loss.detach().cpu().item())
                     return_mean = float(returns.mean().detach().cpu().item()) if returns.numel() > 0 else 0.0
                     return_std = (
                         float(returns.std(unbiased=False).detach().cpu().item()) if returns.numel() > 1 else 0.0
@@ -444,6 +477,7 @@ class ReinforceCnnTrainer:
                     writer.add_scalar("episode/move_success_rate", moved_count / max(1, len(actions)), episode)
                     writer.add_scalar("optimizer/loss", float(self.last_loss or 0.0), self.global_step)
                     writer.add_scalar("optimizer/policy_loss", policy_loss_value, self.global_step)
+                    writer.add_scalar("optimizer/value_loss", value_loss_value, self.global_step)
                     writer.add_scalar("optimizer/entropy", self.last_entropy, self.global_step)
                     writer.add_scalar("optimizer/grad_norm", grad_norm, self.global_step)
                     writer.add_scalar("optimizer/returns_mean", return_mean, self.global_step)

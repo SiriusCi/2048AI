@@ -58,6 +58,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         gamma=float(rl_raw["gamma"]),
         learning_rate=float(rl_raw["learningRate"]),
         entropy_coef=float(rl_raw["entropyCoef"]),
+        value_coef=float(rl_raw["valueCoef"]),
+        max_grad_norm=float(rl_raw["maxGradNorm"]),
         invalid_action_penalty=float(rl_raw["invalidActionPenalty"]),
         merge_value_bonus_scale=float(rl_raw["mergeValueBonusScale"]),
     )

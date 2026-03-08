@@ -7,7 +7,7 @@ sync:
   postAckDelaySec: 0.1
 
 trainingDefaults:
-  episodes: 100
+  episodes: 1000
   workers: 1
   seed: null
   maxSteps: null
@@ -17,7 +17,7 @@ trainingDefaults:
   tensorboardLogDir: runs/2048
   tensorboardRunName: null
 
-  checkpointEveryEpisodes: 20
+  checkpointEveryEpisodes: 100
   checkpointDir: models/2048
   checkpointPrefix: reinforce_cnn
   loadModelPath: null
@@ -25,8 +25,10 @@ trainingDefaults:
 
 rl:
   maxExponent: 15
-  gamma: 0.99
-  learningRate: 0.0003
-  entropyCoef: 0.001
-  invalidActionPenalty: -10.0
+  gamma: 0.95
+  learningRate: 0.001
+  entropyCoef: 0.05
+  valueCoef: 0.5
+  maxGradNorm: 0.5
+  invalidActionPenalty: 0.0
   mergeValueBonusScale: 1.0
