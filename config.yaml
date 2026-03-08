@@ -12,6 +12,7 @@ trainingDefaults:
   seed: null
   maxSteps: null
   terminateOnWin: true
+  syncWithFrontend: false
 
   tensorboardLogDir: runs/2048
   tensorboardRunName: null

@@ -72,14 +72,17 @@ Model persistence / loading fields:
 - `checkpointPrefix` (string, default: `reinforce_cnn`)
 - `loadModelPath` (string, optional, load weights before run)
 - `playOnly` (bool, default: `false`; if `true`, runs policy without parameter updates)
+- `syncWithFrontend` (bool, default: `false`; set `true` for step-by-step frontend animation sync)
 
 Training implementation details:
 - algorithm: REINFORCE (policy gradient)
 - state encoder: one-hot tensor `16 x 4 x 4` (`2^0` channel represents empty cells)
 - policy network: shallow CNN, `2x2` kernels, stride `1`, **no padding**, **no pooling**
 - current backend RL trainer supports `workers=1`
-- training runs in strict sync mode: backend waits each step until frontend reports animation finished
-- and then enforces an additional backend delay before the next step (configured by `sync.postAckDelaySec`)
+- training supports two modes:
+  - pure backend mode (`syncWithFrontend=false`): no ACK, no frontend dependency
+  - strict frontend sync mode (`syncWithFrontend=true`): backend waits each step for `/api/train/step-done`
+- in strict sync mode, backend also enforces a post-ACK delay (`sync.postAckDelaySec`)
 - TensorBoard scalars/histograms are recorded for step, episode, optimizer, and policy diagnostics
 - when `checkpointEveryEpisodes > 0`, model checkpoints are auto-saved as `*.pt`
 
@@ -89,7 +92,7 @@ Main tunables are centralized in `config.yaml`:
 - `server.host` / `server.port`
 - `sync.postAckDelaySec`
 - `trainingDefaults.*`:
-  `episodes`, `workers`, `seed`, `maxSteps`, `terminateOnWin`,
+  `episodes`, `workers`, `seed`, `maxSteps`, `terminateOnWin`, `syncWithFrontend`,
   `tensorboardLogDir`, `tensorboardRunName`,
   `checkpointEveryEpisodes`, `checkpointDir`, `checkpointPrefix`,
   `loadModelPath`, `playOnly`
@@ -109,6 +112,7 @@ Example API payload to save every 10 episodes and load a prior model:
 {
   "episodes": 100,
   "workers": 1,
+  "syncWithFrontend": false,
   "checkpointEveryEpisodes": 10,
   "checkpointDir": "models/2048",
   "loadModelPath": "models/2048/reinforce_cnn_ep000100.pt"

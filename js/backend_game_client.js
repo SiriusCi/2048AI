@@ -239,6 +239,8 @@ BackendGameClient.prototype.getTrainingPayload = function () {
     seed: seedText === "" ? null : parseInt(seedText, 10),
     maxSteps: maxStepsText === "" ? null : parseInt(maxStepsText, 10),
     terminateOnWin: this.trainingElements.terminateCheckbox.checked,
+    // Frontend mode should block each step until animation ACK.
+    syncWithFrontend: true,
     checkpointEveryEpisodes: isNaN(checkpointEvery) ? 0 : checkpointEvery,
     checkpointDir: checkpointDirText === "" ? null : checkpointDirText,
     loadModelPath: loadModelPathText === "" ? null : loadModelPathText,
@@ -542,6 +544,11 @@ BackendGameClient.prototype.updateTrainingStatus = function (status) {
   var maxTile = status.maxTileSeen || 0;
   var latestFrameId = status.latestFrameId || 0;
   var ackedFrameId = status.ackedFrameId || 0;
+  var syncWithFrontend = !!status.syncWithFrontend;
+  if (!syncWithFrontend && this.trainingAckTimer) {
+    window.clearTimeout(this.trainingAckTimer);
+    this.trainingAckTimer = null;
+  }
 
   var lines = [
     "algorithm: " + (status.algorithm || "unknown"),
@@ -556,6 +563,7 @@ BackendGameClient.prototype.updateTrainingStatus = function (status) {
     "entropy: " + (status.entropy == null ? "-" : status.entropy.toFixed(6)),
     "loss: " + (status.loss == null ? "-" : status.loss.toFixed(6)),
     "globalStep: " + (status.globalStep || 0),
+    "syncWithFrontend: " + (syncWithFrontend ? "yes" : "no"),
     "frame: " + latestFrameId,
     "ackedFrame: " + ackedFrameId,
     "awaitingAck: " + (status.awaitingAck ? "yes" : "no"),
@@ -598,7 +606,9 @@ BackendGameClient.prototype.updateTrainingStatus = function (status) {
     if (running && latestFrameId > this.lastRenderedFrameId) {
       this.renderTrainingOnMainBoard(status.latestState);
       this.lastRenderedFrameId = latestFrameId;
-      this.scheduleTrainingStepDone(latestFrameId);
+      if (syncWithFrontend) {
+        this.scheduleTrainingStepDone(latestFrameId);
+      }
     }
   } else {
     this.trainingElements.boardBlock.textContent = "No training board yet.";

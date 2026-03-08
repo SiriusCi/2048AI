@@ -64,6 +64,7 @@ class GameRequestHandler(SimpleHTTPRequestHandler):
             seed = body.get("seed", defaults.get("seed"))
             max_steps = body.get("maxSteps", defaults.get("maxSteps"))
             terminate_on_win = body.get("terminateOnWin", defaults.get("terminateOnWin"))
+            sync_with_frontend = body.get("syncWithFrontend", defaults.get("syncWithFrontend"))
             tensorboard_log_dir = body.get("tensorboardLogDir", defaults.get("tensorboardLogDir"))
             tensorboard_run_name = body.get("tensorboardRunName", defaults.get("tensorboardRunName"))
             checkpoint_every_episodes = body.get(
@@ -109,6 +110,12 @@ class GameRequestHandler(SimpleHTTPRequestHandler):
             if not isinstance(terminate_on_win, bool):
                 self._send_json(
                     {"error": "Field 'terminateOnWin' must be true or false"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            if not isinstance(sync_with_frontend, bool):
+                self._send_json(
+                    {"error": "Field 'syncWithFrontend' must be true or false"},
                     HTTPStatus.BAD_REQUEST,
                 )
                 return
@@ -167,6 +174,7 @@ class GameRequestHandler(SimpleHTTPRequestHandler):
                     seed=seed,
                     max_steps=max_steps,
                     terminate_on_win=terminate_on_win,
+                    sync_with_frontend=sync_with_frontend,
                     tensorboard_log_dir=tensorboard_log_dir,
                     tensorboard_run_name=tensorboard_run_name,
                     checkpoint_every_episodes=checkpoint_every_episodes,

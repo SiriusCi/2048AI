@@ -26,6 +26,7 @@ DEFAULT_RUNTIME_CONFIG: dict[str, Any] = {
         "seed": None,
         "maxSteps": None,
         "terminateOnWin": True,
+        "syncWithFrontend": False,
         "tensorboardLogDir": "runs/2048",
         "tensorboardRunName": None,
         "checkpointEveryEpisodes": 0,
@@ -152,6 +153,10 @@ def load_runtime_config(path: str | Path = "config.yaml") -> dict[str, Any]:
             "seed": _as_optional_int(training_defaults.get("seed"), field="trainingDefaults.seed"),
             "maxSteps": _as_optional_int(training_defaults.get("maxSteps"), field="trainingDefaults.maxSteps", min_value=1),
             "terminateOnWin": _as_bool(training_defaults.get("terminateOnWin"), field="trainingDefaults.terminateOnWin"),
+            "syncWithFrontend": _as_bool(
+                training_defaults.get("syncWithFrontend"),
+                field="trainingDefaults.syncWithFrontend",
+            ),
             "tensorboardLogDir": _as_optional_str(
                 training_defaults.get("tensorboardLogDir"),
                 field="trainingDefaults.tensorboardLogDir",

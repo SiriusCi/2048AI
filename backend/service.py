@@ -67,7 +67,7 @@ class TrainingManager:
             "loss": None,
             "entropy": None,
             "globalStep": 0,
-            "syncWithFrontend": True,
+            "syncWithFrontend": False,
             "latestFrameId": 0,
             "ackedFrameId": 0,
             "awaitingAck": False,
@@ -101,6 +101,7 @@ class TrainingManager:
         seed: int | None,
         max_steps: int | None,
         terminate_on_win: bool,
+        sync_with_frontend: bool = False,
         tensorboard_log_dir: str | None = None,
         tensorboard_run_name: str | None = None,
         checkpoint_every_episodes: int = 0,
@@ -141,6 +142,7 @@ class TrainingManager:
                     "seed": seed,
                     "maxSteps": max_steps,
                     "terminateOnWin": terminate_on_win,
+                    "syncWithFrontend": bool(sync_with_frontend),
                     "tensorboardLogDir": resolved_tensorboard_log_dir,
                     "tensorboardRunName": tensorboard_run_name,
                     "checkpointEveryEpisodes": checkpoint_every_episodes,
@@ -250,6 +252,7 @@ class TrainingManager:
     ) -> None:
         with self._sync_cv:
             frame_id = int(self._status["latestFrameId"]) + 1
+            sync_with_frontend = bool(self._status.get("syncWithFrontend", False))
             self._status["currentEpisode"] = int(episode)
             self._status["globalStep"] = int(metrics.get("globalStep", self._status["globalStep"]))
             self._status["latestState"] = {
@@ -262,6 +265,14 @@ class TrainingManager:
                 "animationGrid": obs.get("animationGrid"),
             }
             self._status["latestFrameId"] = frame_id
+            if not sync_with_frontend:
+                # Pure backend mode: do not block on frontend ACK.
+                self._status["ackedFrameId"] = frame_id
+                self._status["awaitingAck"] = False
+                self._status["coolingDown"] = False
+                self._sync_cv.notify_all()
+                return
+
             self._status["awaitingAck"] = True
             self._sync_cv.notify_all()
 
@@ -362,6 +373,7 @@ class GameService:
         "seed": None,
         "maxSteps": None,
         "terminateOnWin": True,
+        "syncWithFrontend": False,
         "tensorboardLogDir": TrainingManager.DEFAULT_TENSORBOARD_LOG_DIR,
         "tensorboardRunName": None,
         "checkpointEveryEpisodes": 0,
@@ -432,6 +444,7 @@ class GameService:
         seed: int | None,
         max_steps: int | None,
         terminate_on_win: bool,
+        sync_with_frontend: bool = False,
         tensorboard_log_dir: str | None = None,
         tensorboard_run_name: str | None = None,
         checkpoint_every_episodes: int = 0,
@@ -446,6 +459,7 @@ class GameService:
             seed=seed,
             max_steps=max_steps,
             terminate_on_win=terminate_on_win,
+            sync_with_frontend=sync_with_frontend,
             tensorboard_log_dir=tensorboard_log_dir,
             tensorboard_run_name=tensorboard_run_name,
             checkpoint_every_episodes=checkpoint_every_episodes,
