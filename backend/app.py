@@ -62,6 +62,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_replay_size=int(rl_raw["minReplaySize"]),
         target_update_freq=int(rl_raw["targetUpdateFreq"]),
         train_freq=int(rl_raw["trainFreq"]),
+        num_envs=int(rl_raw["numEnvs"]),
         max_grad_norm=float(rl_raw["maxGradNorm"]),
         epsilon_start=float(rl_raw["epsilonStart"]),
         epsilon_end=float(rl_raw["epsilonEnd"]),

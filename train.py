@@ -184,6 +184,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     min_replay_size = int(rl_raw["minReplaySize"])
     target_update_freq = int(rl_raw["targetUpdateFreq"])
     train_freq = int(rl_raw["trainFreq"])
+    num_envs = int(rl_raw["numEnvs"])
     max_grad_norm = float(rl_raw["maxGradNorm"])
     epsilon_start = args.epsilon_start if args.epsilon_start is not None else float(rl_raw["epsilonStart"])
     epsilon_end = args.epsilon_end if args.epsilon_end is not None else float(rl_raw["epsilonEnd"])
@@ -211,6 +212,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_replay_size=min_replay_size,
         target_update_freq=target_update_freq,
         train_freq=train_freq,
+        num_envs=num_envs,
         max_grad_norm=max_grad_norm,
         epsilon_start=epsilon_start,
         epsilon_end=epsilon_end,
@@ -236,6 +238,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  Min replay size:      {min_replay_size}")
     print(f"  Target update freq:   {target_update_freq}")
     print(f"  Train freq:           {train_freq}")
+    print(f"  Num envs:             {num_envs}")
     print(f"  Max grad norm:        {max_grad_norm}")
     print(f"  Epsilon:              {epsilon_start} -> {epsilon_end} over {epsilon_decay_steps} steps")
     print(f"  Invalid penalty:      {invalid_penalty}")

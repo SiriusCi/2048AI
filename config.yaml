@@ -32,9 +32,10 @@ rl:
   minReplaySize: 1000
   targetUpdateFreq: 500
   trainFreq: 4
+  numEnvs: 8
   maxGradNorm: 10.0
   epsilonStart: 1.0
   epsilonEnd: 0.01
-  epsilonDecaySteps: 50000
+  epsilonDecaySteps: 20000
   invalidActionPenalty: 0.0
   mergeValueBonusScale: 1.0

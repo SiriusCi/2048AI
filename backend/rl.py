@@ -37,6 +37,7 @@ class DQNConfig:
     min_replay_size: int = 1000
     target_update_freq: int = 500
     train_freq: int = 4
+    num_envs: int = 8
     max_grad_norm: float = 10.0
     epsilon_start: float = 1.0
     epsilon_end: float = 0.01
@@ -155,17 +156,34 @@ class DQNTrainer:
                 encoded[exponent, row, col] = 1.0
         return encoded
 
-    def _select_action(self, state_tensor: torch.Tensor, movable: list[int], epsilon: float) -> int:
-        if not movable:
-            return 0
-        if random.random() < epsilon:
-            return random.choice(movable)
+    def _select_actions_batch(
+        self,
+        state_batch: torch.Tensor,
+        movable_list: list[list[int]],
+        epsilon: float,
+    ) -> list[int]:
+        """Select actions for a batch of states using epsilon-greedy with masking."""
+        n = state_batch.shape[0]
+        actions: list[int] = []
+
+        # Get Q-values for entire batch in one forward pass
         with torch.no_grad():
-            q_values = self.q_net(state_tensor.unsqueeze(0).to(self.device)).squeeze(0)
-            mask = torch.full_like(q_values, float("-inf"))
-            for a in movable:
-                mask[a] = 0.0
-            return int((q_values + mask).argmax().item())
+            q_all = self.q_net(state_batch.to(self.device))  # (N, 4)
+
+        for i in range(n):
+            movable = movable_list[i]
+            if not movable:
+                actions.append(0)
+                continue
+            if random.random() < epsilon:
+                actions.append(random.choice(movable))
+            else:
+                q = q_all[i]
+                mask = torch.full_like(q, float("-inf"))
+                for a in movable:
+                    mask[a] = 0.0
+                actions.append(int((q + mask).argmax().item()))
+        return actions
 
     def _learn(self) -> float:
         if len(self.replay) < self.config.min_replay_size:
@@ -283,6 +301,18 @@ class DQNTrainer:
             return None, None, f"Failed to initialize TensorBoard writer: {error}"
         return writer, str(run_dir), None
 
+    def _make_env(self, env_seed: int | None, max_steps: int | None,
+                   terminate_on_win: bool) -> tuple[Headless2048Env, dict[str, Any], torch.Tensor]:
+        """Create an env, reset it, return (env, obs, state_tensor)."""
+        env = Headless2048Env(
+            seed=env_seed, max_steps=max_steps,
+            terminate_on_win=terminate_on_win,
+            invalid_action_penalty=self.config.invalid_action_penalty,
+            merge_value_bonus_scale=self.config.merge_value_bonus_scale,
+        )
+        obs = env.reset(seed=env_seed)
+        return env, obs, self._encode_state(obs["state"])
+
     def train(
         self,
         *,
@@ -300,7 +330,7 @@ class DQNTrainer:
         load_model_path: str | None = None,
         play_only: bool = False,
     ) -> dict[str, Any]:
-        score_sum = 0.0
+        recent_scores: deque[float] = deque(maxlen=100)
         max_tile_seen = 0
         completed = 0
         checkpoints_saved = 0
@@ -331,6 +361,7 @@ class DQNTrainer:
                 "batchSize": self.config.batch_size,
                 "replayCapacity": self.config.replay_capacity,
                 "targetUpdateFreq": self.config.target_update_freq,
+                "numEnvs": self.config.num_envs,
                 "epsilonStart": self.config.epsilon_start,
                 "epsilonEnd": self.config.epsilon_end,
                 "epsilonDecaySteps": self.config.epsilon_decay_steps,
@@ -338,135 +369,144 @@ class DQNTrainer:
             }
             writer.add_text("run/config", json.dumps(config_payload, ensure_ascii=True, sort_keys=True), 0)
 
+        num_envs = self.config.num_envs
+        # Track next seed offset for creating new envs
+        next_seed_offset = num_envs
+
+        # Per-env tracking
+        envs: list[Headless2048Env] = []
+        obs_list: list[dict[str, Any]] = []
+        state_tensors: list[torch.Tensor] = []
+        ep_rewards: list[float] = [0.0] * num_envs
+        ep_losses_all: list[list[float]] = [[] for _ in range(num_envs)]
+
+        # Initialize all environments
+        for i in range(num_envs):
+            env_seed = None if self.seed is None else self.seed + i
+            env, obs, st = self._make_env(env_seed, max_steps, terminate_on_win)
+            envs.append(env)
+            obs_list.append(obs)
+            state_tensors.append(st)
+
         try:
-            for episode in range(1, episodes + 1):
+            while completed < episodes:
                 if stop_event.is_set():
                     break
 
-                env_seed = None if self.seed is None else self.seed + episode - 1
-                env = Headless2048Env(
-                    seed=env_seed, max_steps=max_steps,
-                    terminate_on_win=terminate_on_win,
-                    invalid_action_penalty=self.config.invalid_action_penalty,
-                    merge_value_bonus_scale=self.config.merge_value_bonus_scale,
-                )
-                obs = env.reset(seed=env_seed)
-                terminated = False
-                truncated = False
-                total_reward = 0.0
-                actions: list[int] = []
-                moved_count = 0
-                ep_losses: list[float] = []
+                epsilon = 0.0 if play_only else self._epsilon()
+                self.last_epsilon = epsilon
 
-                state_tensor = self._encode_state(obs["state"])
+                # Batch forward pass: select actions for all envs at once
+                state_batch = torch.stack(state_tensors)
+                movable_list = [obs.get("movableActions", [0, 1, 2, 3]) for obs in obs_list]
+                actions = self._select_actions_batch(state_batch, movable_list, epsilon)
 
-                while not (terminated or truncated):
+                # Step all envs
+                for i in range(num_envs):
                     if stop_event.is_set():
                         break
 
-                    movable = obs.get("movableActions", [0, 1, 2, 3])
-                    epsilon = 0.0 if play_only else self._epsilon()
-                    self.last_epsilon = epsilon
-                    action_index = self._select_action(state_tensor, movable, epsilon)
-
-                    next_obs, reward, terminated, truncated, step_info = env.step(action_index)
-                    next_state_tensor = self._encode_state(next_obs["state"])
+                    action_index = actions[i]
+                    next_obs, reward, terminated, truncated, step_info = envs[i].step(action_index)
+                    next_st = self._encode_state(next_obs["state"])
                     next_movable = next_obs.get("movableActions", [0, 1, 2, 3])
 
                     if not play_only:
                         done = terminated or truncated
                         self.replay.push(Transition(
-                            state=state_tensor,
+                            state=state_tensors[i],
                             action=action_index,
                             reward=float(reward),
-                            next_state=next_state_tensor,
+                            next_state=next_st,
                             done=done,
                             next_movable=next_movable,
                         ))
-                        if self.global_step % self.config.train_freq == 0:
-                            loss_val = self._learn()
-                            if loss_val > 0:
-                                ep_losses.append(loss_val)
 
-                        # Target network sync
-                        if self.global_step % self.config.target_update_freq == 0:
-                            self.target_net.load_state_dict(self.q_net.state_dict())
-
-                    actions.append(action_index)
-                    moved = bool(step_info.get("moved", False))
-                    if moved:
-                        moved_count += 1
+                    ep_rewards[i] += float(reward)
                     self.global_step += 1
-                    total_reward += float(reward)
-
-                    if writer is not None:
-                        writer.add_scalar("train/step_reward", float(reward), self.global_step)
-                        writer.add_scalar("train/epsilon", epsilon, self.global_step)
-                        if ep_losses:
-                            writer.add_scalar("train/step_loss", ep_losses[-1], self.global_step)
 
                     if on_step is not None:
                         step_obs = dict(next_obs)
                         step_obs["action"] = action_index
                         step_obs["animationGrid"] = step_info.get("animationGrid")
-                        on_step(episode, step_obs, {
+                        on_step(completed + 1, step_obs, {
                             "globalStep": self.global_step,
-                            "totalReward": total_reward,
+                            "totalReward": ep_rewards[i],
                         })
 
-                    state_tensor = next_state_tensor
-                    obs = next_obs
+                    # Episode finished — auto-reset this env
+                    if terminated or truncated:
+                        completed += 1
+                        recent_scores.append(float(next_obs["score"]))
+                        max_tile_seen = max(max_tile_seen, int(next_obs["maxTile"]))
 
-                if stop_event.is_set():
-                    break
+                        avg_loss_ep = (sum(ep_losses_all[i]) / len(ep_losses_all[i])
+                                       if ep_losses_all[i] else 0.0)
+                        self.last_loss = avg_loss_ep if ep_losses_all[i] else None
 
-                avg_loss = sum(ep_losses) / len(ep_losses) if ep_losses else 0.0
-                self.last_loss = avg_loss if ep_losses else None
+                        episode_result = dict(next_obs)
+                        episode_result["terminated"] = bool(terminated)
+                        episode_result["truncated"] = bool(truncated)
+                        episode_result["totalReward"] = ep_rewards[i]
 
-                score_sum += float(obs["score"])
-                max_tile_seen = max(max_tile_seen, int(obs["maxTile"]))
-                completed += 1
+                        metrics: dict[str, Any] = {
+                            "epsilon": self.last_epsilon,
+                            "loss": self.last_loss,
+                            "globalStep": self.global_step,
+                            "averageScore": (sum(recent_scores) / len(recent_scores)) if recent_scores else 0.0,
+                            "replaySize": len(self.replay),
+                        }
 
-                episode_result = dict(obs)
-                episode_result["terminated"] = bool(terminated)
-                episode_result["truncated"] = bool(truncated)
-                episode_result["totalReward"] = total_reward
+                        if checkpoint_every_episodes > 0 and resolved_checkpoint_dir is not None:
+                            if completed % checkpoint_every_episodes == 0:
+                                cp_name = f"{checkpoint_prefix}_ep{completed:06d}.pt"
+                                cp_path = Path(resolved_checkpoint_dir) / cp_name
+                                latest_checkpoint_path = self._save_checkpoint(
+                                    checkpoint_path=cp_path, episode=completed,
+                                    average_score=metrics["averageScore"],
+                                    max_tile_seen=max_tile_seen,
+                                )
+                                checkpoints_saved += 1
+                                metrics["checkpointPath"] = latest_checkpoint_path
+                                metrics["checkpointsSaved"] = checkpoints_saved
 
-                metrics: dict[str, Any] = {
-                    "epsilon": self.last_epsilon,
-                    "loss": self.last_loss,
-                    "globalStep": self.global_step,
-                    "averageScore": (score_sum / completed) if completed > 0 else 0.0,
-                    "replaySize": len(self.replay),
-                }
+                        if on_episode_end is not None:
+                            on_episode_end(completed, episode_result, metrics)
 
-                if checkpoint_every_episodes > 0 and resolved_checkpoint_dir is not None:
-                    if episode % checkpoint_every_episodes == 0:
-                        cp_name = f"{checkpoint_prefix}_ep{episode:06d}.pt"
-                        cp_path = Path(resolved_checkpoint_dir) / cp_name
-                        latest_checkpoint_path = self._save_checkpoint(
-                            checkpoint_path=cp_path, episode=episode,
-                            average_score=metrics["averageScore"],
-                            max_tile_seen=max_tile_seen,
-                        )
-                        checkpoints_saved += 1
-                        metrics["checkpointPath"] = latest_checkpoint_path
-                        metrics["checkpointsSaved"] = checkpoints_saved
+                        if writer is not None:
+                            writer.add_scalar("episode/score", float(next_obs.get("score", 0)), completed)
+                            writer.add_scalar("episode/max_tile", float(next_obs.get("maxTile", 0)), completed)
+                            writer.add_scalar("episode/steps", float(next_obs.get("steps", 0)), completed)
+                            writer.add_scalar("episode/total_reward", ep_rewards[i], completed)
+                            writer.add_scalar("episode/epsilon", self.last_epsilon, completed)
+                            writer.add_scalar("episode/avg_loss", avg_loss_ep, completed)
+                            writer.add_scalar("episode/replay_size", float(len(self.replay)), completed)
 
-                if on_episode_end is not None:
-                    on_episode_end(episode, episode_result, metrics)
+                        # Reset this env slot
+                        env_seed = None if self.seed is None else self.seed + next_seed_offset
+                        next_seed_offset += 1
+                        envs[i], obs_list[i], state_tensors[i] = self._make_env(
+                            env_seed, max_steps, terminate_on_win)
+                        ep_rewards[i] = 0.0
+                        ep_losses_all[i] = []
 
-                if writer is not None:
-                    writer.add_scalar("episode/score", float(obs.get("score", 0)), episode)
-                    writer.add_scalar("episode/max_tile", float(obs.get("maxTile", 0)), episode)
-                    writer.add_scalar("episode/steps", float(obs.get("steps", 0)), episode)
-                    writer.add_scalar("episode/total_reward", float(total_reward), episode)
-                    writer.add_scalar("episode/epsilon", self.last_epsilon, episode)
-                    writer.add_scalar("episode/avg_loss", avg_loss, episode)
-                    writer.add_scalar("episode/replay_size", float(len(self.replay)), episode)
-                    writer.add_scalar("episode/move_success_rate",
-                                      moved_count / max(1, len(actions)), episode)
-                    writer.add_scalar("run/checkpoints_saved", float(checkpoints_saved), episode)
+                        if completed >= episodes:
+                            break
+                    else:
+                        state_tensors[i] = next_st
+                        obs_list[i] = next_obs
+
+                # Learn & target sync (once per batch step, not per env)
+                if not play_only and self.global_step % self.config.train_freq == 0:
+                    loss_val = self._learn()
+                    if loss_val > 0:
+                        for ll in ep_losses_all:
+                            ll.append(loss_val)
+
+                if not play_only and self.global_step % self.config.target_update_freq == 0:
+                    self.target_net.load_state_dict(self.q_net.state_dict())
+
+                if writer is not None and self.global_step % 500 == 0:
                     writer.flush()
         finally:
             if writer is not None:
@@ -475,7 +515,7 @@ class DQNTrainer:
 
         return {
             "completedEpisodes": completed,
-            "averageScore": (score_sum / completed) if completed > 0 else 0.0,
+            "averageScore": (sum(recent_scores) / len(recent_scores)) if recent_scores else 0.0,
             "maxTileSeen": max_tile_seen,
             "globalStep": self.global_step,
             "lastLoss": self.last_loss,
