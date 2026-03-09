@@ -28,7 +28,7 @@ rl:
   gamma: 0.99
   learningRate: 0.00005
   batchSize: 256
-  replayCapacity: 200000
+  replayCapacity: 500000
   minReplaySize: 5000
   targetUpdateFreq: 2000
   trainFreq: 1
@@ -42,3 +42,4 @@ rl:
   mergeValueBonusScale: 0.0
   rewardLogScale: true
   emptyCellRewardScale: 0.25
+  nStep: 3

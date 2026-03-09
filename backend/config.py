@@ -40,7 +40,7 @@ DEFAULT_RUNTIME_CONFIG: dict[str, Any] = {
         "gamma": 0.99,
         "learningRate": 5e-5,
         "batchSize": 256,
-        "replayCapacity": 200000,
+        "replayCapacity": 500000,
         "minReplaySize": 5000,
         "targetUpdateFreq": 2000,
         "trainFreq": 1,
@@ -54,6 +54,7 @@ DEFAULT_RUNTIME_CONFIG: dict[str, Any] = {
         "mergeValueBonusScale": 0.0,
         "rewardLogScale": True,
         "emptyCellRewardScale": 0.25,
+        "nStep": 3,
     },
 }
 
@@ -228,6 +229,7 @@ def load_runtime_config(path: str | Path = "config.yaml") -> dict[str, Any]:
                 field="rl.emptyCellRewardScale",
                 min_value=0.0,
             ),
+            "nStep": _as_int(rl.get("nStep", 3), field="rl.nStep", min_value=1),
         },
     }
     return normalized

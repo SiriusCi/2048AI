@@ -63,6 +63,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         target_update_freq=int(rl_raw["targetUpdateFreq"]),
         train_freq=int(rl_raw["trainFreq"]),
         gradient_steps=int(rl_raw.get("gradientSteps", 4)),
+        n_step=int(rl_raw.get("nStep", 3)),
         num_envs=int(rl_raw["numEnvs"]),
         max_grad_norm=float(rl_raw["maxGradNorm"]),
         epsilon_start=float(rl_raw["epsilonStart"]),

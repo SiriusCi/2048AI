@@ -34,7 +34,7 @@ class DQNConfig:
     gamma: float = 0.99
     learning_rate: float = 5e-5
     batch_size: int = 256
-    replay_capacity: int = 200_000
+    replay_capacity: int = 500_000
     min_replay_size: int = 5000
     target_update_freq: int = 2000
     train_freq: int = 1
@@ -48,6 +48,7 @@ class DQNConfig:
     merge_value_bonus_scale: float = 0.0
     reward_log_scale: bool = True
     empty_cell_reward_scale: float = 0.25
+    n_step: int = 3
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +151,58 @@ class PrioritizedReplayBuffer:
 
     def __len__(self) -> int:
         return self._size
+
+
+class NStepBuffer:
+    """Accumulates transitions and produces n-step return transitions."""
+
+    def __init__(self, n: int, gamma: float) -> None:
+        self.n = n
+        self.gamma = gamma
+        self._buf: deque[tuple[torch.Tensor, int, float, torch.Tensor, bool, list[int]]] = deque()
+
+    def push(self, state: torch.Tensor, action: int, reward: float,
+             next_state: torch.Tensor, done: bool,
+             next_movable: list[int]) -> list[Transition]:
+        """Add a step, return any ready n-step transitions."""
+        self._buf.append((state, action, reward, next_state, done, next_movable))
+        if done:
+            return self._flush()
+        if len(self._buf) >= self.n:
+            return self._pop_one()
+        return []
+
+    def _nstep_return(self, entries: list | deque) -> float:
+        R = 0.0
+        for e in reversed(entries):
+            R = e[2] + self.gamma * R
+        return R
+
+    def _pop_one(self) -> list[Transition]:
+        entries = list(self._buf)[:self.n]
+        R = self._nstep_return(entries)
+        t = Transition(
+            state=entries[0][0], action=entries[0][1], reward=R,
+            next_state=entries[-1][3], done=False,
+            next_movable=entries[-1][5],
+        )
+        self._buf.popleft()
+        return [t]
+
+    def _flush(self) -> list[Transition]:
+        """Flush all remaining entries on episode end."""
+        entries = list(self._buf)
+        transitions: list[Transition] = []
+        for i in range(len(entries)):
+            remaining = entries[i:]
+            R = self._nstep_return(remaining)
+            transitions.append(Transition(
+                state=remaining[0][0], action=remaining[0][1], reward=R,
+                next_state=entries[-1][3], done=True,
+                next_movable=entries[-1][5],
+            ))
+        self._buf.clear()
+        return transitions
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +311,8 @@ class DQNTrainer:
                 next_q_online[i] = next_q_online[i] + m
             best_actions = next_q_online.argmax(dim=1)
             next_q = next_q_target.gather(1, best_actions.unsqueeze(1)).squeeze(1)
-            target = rewards + self.config.gamma * next_q * (1.0 - dones)
+            gamma_n = self.config.gamma ** self.config.n_step
+            target = rewards + gamma_n * next_q * (1.0 - dones)
 
         td_errors = (q_values - target).detach().cpu().numpy()
         self.replay.update_priorities(indices, td_errors)
@@ -435,6 +489,9 @@ class DQNTrainer:
         state_tensors: list[torch.Tensor] = []
         ep_rewards: list[float] = [0.0] * num_envs
         ep_losses_all: list[list[float]] = [[] for _ in range(num_envs)]
+        n_step_bufs: list[NStepBuffer] = [
+            NStepBuffer(self.config.n_step, self.config.gamma) for _ in range(num_envs)
+        ]
 
         # Initialize all environments
         for i in range(num_envs):
@@ -469,14 +526,13 @@ class DQNTrainer:
 
                     if not play_only:
                         done = terminated or truncated
-                        self.replay.push(Transition(
-                            state=state_tensors[i],
-                            action=action_index,
-                            reward=float(reward),
-                            next_state=next_st,
-                            done=done,
-                            next_movable=next_movable,
-                        ))
+                        nstep_transitions = n_step_bufs[i].push(
+                            state=state_tensors[i], action=action_index,
+                            reward=float(reward), next_state=next_st,
+                            done=done, next_movable=next_movable,
+                        )
+                        for t in nstep_transitions:
+                            self.replay.push(t)
 
                     ep_rewards[i] += float(reward)
                     self.global_step += 1
@@ -545,6 +601,7 @@ class DQNTrainer:
                             env_seed, max_steps, terminate_on_win)
                         ep_rewards[i] = 0.0
                         ep_losses_all[i] = []
+                        n_step_bufs[i] = NStepBuffer(self.config.n_step, self.config.gamma)
 
                         if completed >= episodes:
                             break
