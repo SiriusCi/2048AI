@@ -49,6 +49,12 @@ class GameRequestHandler(SimpleHTTPRequestHandler):
         if path == "/api/train/status":
             self._send_json(self.service.training_status())
             return
+        if path == "/api/replay/list":
+            self._send_json({"replays": self.service.replay_list()})
+            return
+        if path == "/api/replay/status":
+            self._send_json(self.service.replay_status())
+            return
         self._send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def _handle_api_post(self, path: str) -> None:
@@ -249,6 +255,29 @@ class GameRequestHandler(SimpleHTTPRequestHandler):
                 self._send_json(self.service.move(direction))
             except ValueError as error:
                 self._send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/replay/load":
+            body = self._read_json()
+            if body is None:
+                self._send_json({"error": "Invalid JSON body"}, HTTPStatus.BAD_REQUEST)
+                return
+            filename = body.get("filename")
+            if not filename or not isinstance(filename, str):
+                self._send_json({"error": "Field 'filename' is required"}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                self._send_json(self.service.replay_load(filename))
+            except (FileNotFoundError, OSError) as error:
+                self._send_json({"error": str(error)}, HTTPStatus.NOT_FOUND)
+            return
+
+        if path == "/api/replay/step":
+            self._send_json(self.service.replay_step())
+            return
+
+        if path == "/api/replay/stop":
+            self._send_json(self.service.replay_stop())
             return
 
         self._send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)

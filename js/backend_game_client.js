@@ -20,6 +20,7 @@ function BackendGameClient(InputManager, Actuator) {
   this.inputManager.on("keepPlaying", this.keepPlaying.bind(this));
 
   this.setupTrainingUI();
+  this.setupReplayUI();
   this.fetchState();
   this.fetchTrainingStatus();
 }
@@ -628,6 +629,221 @@ BackendGameClient.prototype.updateTrainingStatus = function (status) {
       this.fetchState();
     }
   }
+};
+
+// ===================================================================
+// Replay functionality
+// ===================================================================
+
+BackendGameClient.prototype.setupReplayUI = function () {
+  var self = this;
+  this.replayElements = {
+    select: document.getElementById("replay-select"),
+    refreshButton: document.getElementById("replay-refresh-button"),
+    playButton: document.getElementById("replay-play-button"),
+    pauseButton: document.getElementById("replay-pause-button"),
+    stepButton: document.getElementById("replay-step-button"),
+    stopButton: document.getElementById("replay-stop-button"),
+    speedSlider: document.getElementById("replay-speed"),
+    speedLabel: document.getElementById("replay-speed-label"),
+    statusBlock: document.getElementById("replay-status")
+  };
+
+  if (!this.replayElements.select) {
+    return;
+  }
+
+  this.replayActive = false;
+  this.replayPlaying = false;
+  this.replayTimer = null;
+  this.replayBestScore = 0;
+
+  this.replayElements.refreshButton.addEventListener("click", function () {
+    self.fetchReplayList();
+  });
+  this.replayElements.playButton.addEventListener("click", function () {
+    if (!self.replayActive) {
+      self.loadReplay();
+    } else {
+      self.startReplayAuto();
+    }
+  });
+  this.replayElements.pauseButton.addEventListener("click", function () {
+    self.pauseReplay();
+  });
+  this.replayElements.stepButton.addEventListener("click", function () {
+    self.replayStepOnce();
+  });
+  this.replayElements.stopButton.addEventListener("click", function () {
+    self.stopReplay();
+  });
+  this.replayElements.speedSlider.addEventListener("input", function () {
+    var v = parseInt(self.replayElements.speedSlider.value, 10);
+    self.replayElements.speedLabel.textContent = v + "x";
+    if (self.replayPlaying) {
+      self.pauseReplay();
+      self.startReplayAuto();
+    }
+  });
+
+  this.fetchReplayList();
+};
+
+BackendGameClient.prototype.fetchReplayList = function () {
+  var self = this;
+  this.sendRequest("GET", "/api/replay/list", null, function (error, data) {
+    if (error) {
+      self.logError(error);
+      return;
+    }
+    var select = self.replayElements.select;
+    select.innerHTML = '<option value="">-- Select a replay --</option>';
+    var replays = data.replays || [];
+    replays.forEach(function (r) {
+      var opt = document.createElement("option");
+      opt.value = r.filename;
+      var label = r.filename.replace(/\.json$/, "") +
+        " (score=" + r.score + " tile=" + r.maxTile + " steps=" + r.steps + ")";
+      opt.textContent = label;
+      select.appendChild(opt);
+    });
+  });
+};
+
+BackendGameClient.prototype.loadReplay = function () {
+  var self = this;
+  var filename = this.replayElements.select.value;
+  if (!filename) {
+    return;
+  }
+  this.sendRequest("POST", "/api/replay/load", { filename: filename }, function (error, status) {
+    if (error) {
+      self.logError(error);
+      return;
+    }
+    self.replayActive = true;
+    self.replayBestScore = 0;
+    self.updateReplayButtons(true, false);
+    self.renderReplayStatus(status);
+    // Render initial board from state if available
+    if (status.state) {
+      self.renderReplayState(status.state);
+    }
+    // Auto-start playing
+    self.startReplayAuto();
+  });
+};
+
+BackendGameClient.prototype.startReplayAuto = function () {
+  if (this.replayTimer) {
+    return;
+  }
+  this.replayPlaying = true;
+  this.updateReplayButtons(true, true);
+  var speed = parseInt(this.replayElements.speedSlider.value, 10) || 5;
+  var interval = Math.max(20, Math.round(200 / speed));
+  var self = this;
+  this.replayTimer = window.setInterval(function () {
+    self.replayStepOnce();
+  }, interval);
+};
+
+BackendGameClient.prototype.pauseReplay = function () {
+  this.replayPlaying = false;
+  if (this.replayTimer) {
+    window.clearInterval(this.replayTimer);
+    this.replayTimer = null;
+  }
+  this.updateReplayButtons(true, false);
+};
+
+BackendGameClient.prototype.replayStepOnce = function () {
+  var self = this;
+  this.sendRequest("POST", "/api/replay/step", null, function (error, data) {
+    if (error) {
+      self.logError(error);
+      self.pauseReplay();
+      return;
+    }
+    if (data.error || data.finished) {
+      self.pauseReplay();
+      if (data.finished) {
+        self.replayElements.statusBlock.textContent =
+          "Replay finished. Step " + data.currentStep + "/" + data.totalSteps +
+          "\nFinal score: " + (data.score || 0) + "  MaxTile: " + (data.maxTile || 0);
+      }
+      return;
+    }
+    self.renderReplayStatus(data);
+    if (data.state) {
+      self.renderReplayState(data.state);
+    }
+  });
+};
+
+BackendGameClient.prototype.stopReplay = function () {
+  var self = this;
+  this.pauseReplay();
+  this.replayActive = false;
+  this.sendRequest("POST", "/api/replay/stop", null, function (error) {
+    if (error) {
+      self.logError(error);
+    }
+  });
+  this.updateReplayButtons(false, false);
+  this.replayElements.statusBlock.textContent = "No replay loaded.";
+  this.fetchState();
+};
+
+BackendGameClient.prototype.renderReplayState = function (state) {
+  if (!state) {
+    return;
+  }
+  var score = state.score || 0;
+  if (score > this.replayBestScore) {
+    this.replayBestScore = score;
+  }
+
+  var grid = null;
+  if (state.animationGrid) {
+    grid = this.buildGridFromAnimationGrid(state.animationGrid);
+  }
+  if (!grid && state.grid) {
+    grid = this.buildGrid(state.grid);
+  }
+  if (!grid) {
+    return;
+  }
+
+  this.actuator.continueGame();
+  this.actuator.actuate(grid, {
+    score: score,
+    over: !!state.over,
+    won: !!state.won,
+    bestScore: this.replayBestScore,
+    terminated: false
+  });
+};
+
+BackendGameClient.prototype.renderReplayStatus = function (data) {
+  var dirNames = { 0: "Up", 1: "Right", 2: "Down", 3: "Left" };
+  var lines = [
+    "file: " + (data.filename || "-"),
+    "algorithm: " + (data.algorithm || "-") + "  depth: " + (data.depth || "-"),
+    "step: " + (data.currentStep || 0) + "/" + (data.totalSteps || 0),
+    "score: " + (data.score || 0) + "  maxTile: " + (data.maxTile || 0)
+  ];
+  if (data.action !== undefined && data.action !== null) {
+    lines.push("action: " + (dirNames[data.action] || data.action));
+  }
+  this.replayElements.statusBlock.textContent = lines.join("\n");
+};
+
+BackendGameClient.prototype.updateReplayButtons = function (loaded, playing) {
+  this.replayElements.playButton.disabled = playing;
+  this.replayElements.pauseButton.disabled = !playing;
+  this.replayElements.stepButton.disabled = !loaded || playing;
+  this.replayElements.stopButton.disabled = !loaded;
 };
 
 BackendGameClient.prototype.logError = function (error) {

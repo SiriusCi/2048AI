@@ -154,18 +154,16 @@ def _make_episode_callback(log_every: int = 1):
         avg_score = metrics.get("averageScore", 0.0)
         loss = metrics.get("loss")
         epsilon = metrics.get("epsilon")
-        global_step = metrics.get("globalStep", 0)
         replay_size = metrics.get("replaySize", 0)
 
         loss_str = f"{loss:.4f}" if loss is not None else "N/A"
         epsilon_str = f"{epsilon:.4f}" if epsilon is not None else "N/A"
-        checkpoint_str = f" | ckpt={checkpoint_path}" if checkpoint_path else ""
-
+        
         print(
             f"Episode {episode}: score={score}, maxTile={max_tile}, steps={steps}, "
             f"won={won}, avgScore={avg_score:.2f}, "
             f"R={total_reward:.2f}(base={base_reward:.2f},empty={empty_bonus:.2f}), "
-            f"loss={loss_str}, eps={epsilon_str}, replay={replay_size}, globalStep={global_step}{checkpoint_str}",
+            f"loss={loss_str}, eps={epsilon_str}, replay={replay_size}",
             flush=True,
         )
     return _on_episode_end

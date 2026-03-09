@@ -124,6 +124,25 @@ postAckDelaySec: 2.0</pre>
       <pre id="training-board">No training board yet.</pre>
     </div>
 
+    <div id="replay-panel">
+      <hr>
+      <p><strong class="important">Replay</strong> (Expectimax recorded games)</p>
+      <p>
+        <select id="replay-select"><option value="">-- Select a replay --</option></select>
+        <button id="replay-refresh-button">Refresh</button>
+      </p>
+      <p>
+        <button id="replay-play-button" disabled>Play</button>
+        <button id="replay-pause-button" disabled>Pause</button>
+        <button id="replay-step-button" disabled>Step</button>
+        <button id="replay-stop-button" disabled>Stop</button>
+        Speed
+        <input id="replay-speed" type="range" min="1" max="20" value="5" style="width:100px;vertical-align:middle;">
+        <span id="replay-speed-label">5x</span>
+      </p>
+      <pre id="replay-status">No replay loaded.</pre>
+    </div>
+
     <p class="game-explanation">
       <strong class="important">How to play:</strong> Use your <strong>arrow keys</strong> to move the tiles. When two tiles with the same number touch, they <strong>merge into one!</strong>
     </p>

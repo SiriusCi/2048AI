@@ -6,9 +6,11 @@ import copy
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from .game import Game2048
+from .expectimax import DEFAULT_REPLAY_DIR, list_replays, load_replay
 from .rl import DQNConfig, DQNTrainer
 
 
@@ -388,6 +390,104 @@ class TrainingManager:
                 self._sync_cv.notify_all()
 
 
+class ReplayManager:
+    """Manage replay of a recorded game for frontend visualisation."""
+
+    def __init__(self, replay_dir: str | Path = DEFAULT_REPLAY_DIR) -> None:
+        self._lock = threading.Lock()
+        self._replay_dir = Path(replay_dir)
+        self._game: Game2048 | None = None
+        self._actions: list[int] = []
+        self._current_step: int = 0
+        self._total_steps: int = 0
+        self._filename: str | None = None
+        self._metadata: dict[str, Any] = {}
+        self._active = False
+
+    def list_replays(self) -> list[dict[str, Any]]:
+        return list_replays(self._replay_dir)
+
+    def load(self, filename: str) -> dict[str, Any]:
+        """Load a replay file and initialise Game2048 at step 0."""
+        path = self._replay_dir / filename
+        data = load_replay(path)
+
+        seed = data.get("seed")
+        actions = data.get("actions", [])
+
+        game = Game2048(seed=seed)
+
+        with self._lock:
+            self._game = game
+            self._actions = actions
+            self._current_step = 0
+            self._total_steps = len(actions)
+            self._filename = filename
+            self._metadata = {
+                "algorithm": data.get("algorithm", "unknown"),
+                "depth": data.get("depth"),
+                "seed": seed,
+                "score": data.get("score", 0),
+                "maxTile": data.get("maxTile", 0),
+                "totalSteps": len(actions),
+                "won": data.get("won", False),
+            }
+            self._active = True
+            status = self._build_status()
+            status["state"] = game.serialize_state()
+            return status
+
+    def step(self) -> dict[str, Any]:
+        """Execute the next recorded action and return state with animation."""
+        with self._lock:
+            if not self._active or self._game is None:
+                return {"error": "No replay loaded", "active": False}
+
+            if self._current_step >= self._total_steps:
+                return self._build_status(finished=True)
+
+            direction = self._actions[self._current_step]
+            self._game.move(direction)
+            anim = self._game.consume_last_animation_grid()
+            self._current_step += 1
+
+            status = self._build_status(
+                finished=self._current_step >= self._total_steps
+            )
+            state = self._game.serialize_state()
+            status["state"] = state
+            if anim is not None:
+                status["state"]["animationGrid"] = anim
+            status["action"] = direction
+            return status
+
+    def stop(self) -> dict[str, Any]:
+        """Stop the current replay."""
+        with self._lock:
+            self._active = False
+            self._game = None
+            self._actions = []
+            self._current_step = 0
+            self._total_steps = 0
+            self._filename = None
+            self._metadata = {}
+            return {"active": False}
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            return self._build_status()
+
+    def _build_status(self, finished: bool = False) -> dict[str, Any]:
+        return {
+            "active": self._active,
+            "filename": self._filename,
+            "currentStep": self._current_step,
+            "totalSteps": self._total_steps,
+            "finished": finished or (self._current_step >= self._total_steps and self._active),
+            **self._metadata,
+        }
+
+
 class GameService:
     """Thread-safe wrapper around a single game instance."""
 
@@ -427,6 +527,7 @@ class GameService:
             default_tensorboard_log_dir=default_tensorboard_log_dir,
             default_checkpoint_dir=default_checkpoint_dir,
         )
+        self._replay = ReplayManager()
 
     def state(self) -> dict[str, Any]:
         with self._lock:
@@ -498,3 +599,20 @@ class GameService:
 
     def training_step_done(self, frame_id: int) -> dict[str, Any]:
         return self._training.step_done(frame_id)
+
+    # --- Replay API ---
+
+    def replay_list(self) -> list[dict[str, Any]]:
+        return self._replay.list_replays()
+
+    def replay_load(self, filename: str) -> dict[str, Any]:
+        return self._replay.load(filename)
+
+    def replay_step(self) -> dict[str, Any]:
+        return self._replay.step()
+
+    def replay_stop(self) -> dict[str, Any]:
+        return self._replay.stop()
+
+    def replay_status(self) -> dict[str, Any]:
+        return self._replay.status()
