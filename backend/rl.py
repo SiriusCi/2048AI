@@ -36,7 +36,7 @@ class ReinforceCnnConfig:
 
 
 class OneHotCnnPolicyNet(nn.Module):
-    """Shared-backbone actor-critic CNN for 4x4 board with no padding."""
+    """Policy-only CNN for 4x4 board with no padding."""
 
     def __init__(self, in_channels: int, num_actions: int = 4) -> None:
         super().__init__()
@@ -54,19 +54,9 @@ class OneHotCnnPolicyNet(nn.Module):
             nn.ReLU(),
             nn.Linear(128, num_actions),
         )
-        self.value_head = nn.Sequential(
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Linear(128, 1),
-        )
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        features = self.features(x)
-        return self.policy_head(features), self.value_head(features)
-
-    def policy(self, x: torch.Tensor) -> torch.Tensor:
-        features = self.features(x)
-        return self.policy_head(features)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.policy_head(self.features(x))
 
 
 class ReinforceCnnTrainer:
@@ -86,6 +76,10 @@ class ReinforceCnnTrainer:
         self.global_step = 0
         self.last_loss: float | None = None
         self.last_entropy: float | None = None
+        # Running statistics for return whitening (Welford's online algorithm)
+        self._return_count = 0
+        self._return_mean = 0.0
+        self._return_m2 = 0.0
 
     def _load_model_weights(self, model_path: str) -> str:
         checkpoint_path = Path(model_path).expanduser().resolve()
@@ -289,7 +283,6 @@ class ReinforceCnnTrainer:
 
                 log_probs: list[torch.Tensor] = []
                 entropies: list[torch.Tensor] = []
-                values: list[torch.Tensor] = []
                 rewards: list[float] = []
                 actions: list[int] = []
                 moved_count = 0
@@ -299,7 +292,7 @@ class ReinforceCnnTrainer:
                         break
 
                     state_tensor = self._encode_state(obs["state"]).unsqueeze(0).to(self.device)
-                    logits, value = self.policy_net(state_tensor)
+                    logits = self.policy_net(state_tensor)
 
                     # Mask invalid actions: set logits of unmovable actions to -inf
                     movable = obs.get("movableActions", [0, 1, 2, 3])
@@ -317,7 +310,6 @@ class ReinforceCnnTrainer:
                     log_probs.append(dist.log_prob(action))
                     entropy_step = dist.entropy()
                     entropies.append(entropy_step)
-                    values.append(value.squeeze(-1))
                     rewards.append(float(reward))
                     actions.append(action_index)
 
@@ -402,20 +394,26 @@ class ReinforceCnnTrainer:
                 else:
                     returns = self._discounted_returns(rewards)
                     log_probs_tensor = torch.stack(log_probs)
-                    values_tensor = torch.cat(values)
 
-                    advantages = returns - values_tensor.detach()
-                    if advantages.numel() > 1:
-                        adv_std = advantages.std(unbiased=False)
-                        if adv_std.item() > 1e-6:
-                            advantages = (advantages - advantages.mean()) / (adv_std + 1e-8)
+                    # Whiten returns using running statistics across episodes
+                    for r in returns.detach().cpu().tolist():
+                        self._return_count += 1
+                        delta = r - self._return_mean
+                        self._return_mean += delta / self._return_count
+                        delta2 = r - self._return_mean
+                        self._return_m2 += delta * delta2
+
+                    if self._return_count > 1:
+                        running_std = (self._return_m2 / self._return_count) ** 0.5
+                        if running_std > 1e-6:
+                            advantages = (returns - self._return_mean) / running_std
+                        else:
+                            advantages = returns - self._return_mean
+                    else:
+                        advantages = returns
+
                     policy_loss = -(log_probs_tensor * advantages).mean()
-                    value_loss = nn.functional.huber_loss(values_tensor, returns)
-                    loss = (
-                        policy_loss
-                        + self.config.value_coef * value_loss
-                        - self.config.entropy_coef * entropy_tensor
-                    )
+                    loss = policy_loss - self.config.entropy_coef * entropy_tensor
 
                     self.optimizer.zero_grad(set_to_none=True)
                     loss.backward()
@@ -431,7 +429,7 @@ class ReinforceCnnTrainer:
 
                     self.last_loss = float(loss.detach().cpu().item())
                     policy_loss_value = float(policy_loss.detach().cpu().item())
-                    value_loss_value = float(value_loss.detach().cpu().item())
+                    value_loss_value = 0.0
                     return_mean = float(returns.mean().detach().cpu().item()) if returns.numel() > 0 else 0.0
                     return_std = (
                         float(returns.std(unbiased=False).detach().cpu().item()) if returns.numel() > 1 else 0.0
@@ -485,7 +483,7 @@ class ReinforceCnnTrainer:
                     writer.add_scalar("optimizer/grad_norm", grad_norm, self.global_step)
                     writer.add_scalar("optimizer/returns_mean", return_mean, self.global_step)
                     writer.add_scalar("optimizer/returns_std", return_std, self.global_step)
-                    writer.add_scalar("optimizer/learning_rate", self.config.learning_rate, self.global_step)
+                    writer.add_scalar("optimizer/learning_rate", self.optimizer.param_groups[0]["lr"], self.global_step)
                     writer.add_scalar("run/checkpoints_saved", float(checkpoints_saved), episode)
                     if actions:
                         writer.add_histogram(

@@ -26,10 +26,10 @@ trainingDefaults:
 rl:
   maxExponent: 15
   gamma: 0.95
-  learningRate: 0.001
-  entropyCoef: 0.05
+  learningRate: 0.003
+  entropyCoef: 0.01
   valueCoef: 0.1
-  maxGradNorm: 0.5
+  maxGradNorm: 5.0
   returnScale: 0.001
   invalidActionPenalty: 0.0
   mergeValueBonusScale: 1.0
