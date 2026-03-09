@@ -50,7 +50,9 @@ DEFAULT_RUNTIME_CONFIG: dict[str, Any] = {
         "epsilonEnd": 0.01,
         "epsilonDecaySteps": 100000,
         "invalidActionPenalty": 0.0,
-        "mergeValueBonusScale": 1.0,
+        "mergeValueBonusScale": 0.0,
+        "rewardLogScale": True,
+        "emptyCellRewardScale": 0.25,
     },
 }
 
@@ -216,6 +218,12 @@ def load_runtime_config(path: str | Path = "config.yaml") -> dict[str, Any]:
             "mergeValueBonusScale": _as_float(
                 merge_value_bonus_scale_raw,
                 field="rl.mergeValueBonusScale",
+                min_value=0.0,
+            ),
+            "rewardLogScale": bool(rl.get("rewardLogScale", True)),
+            "emptyCellRewardScale": _as_float(
+                rl.get("emptyCellRewardScale", 0.25),
+                field="rl.emptyCellRewardScale",
                 min_value=0.0,
             ),
         },

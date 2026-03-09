@@ -195,6 +195,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     epsilon_decay_steps = args.epsilon_decay_steps if args.epsilon_decay_steps is not None else int(rl_raw["epsilonDecaySteps"])
     invalid_penalty = args.invalid_penalty if args.invalid_penalty is not None else float(rl_raw["invalidActionPenalty"])
     merge_bonus_scale = args.merge_bonus_scale if args.merge_bonus_scale is not None else float(rl_raw["mergeValueBonusScale"])
+    reward_log_scale = bool(rl_raw.get("rewardLogScale", True))
+    empty_cell_reward_scale = float(rl_raw.get("emptyCellRewardScale", 0.25))
 
     checkpoint_every = args.checkpoint_every if args.checkpoint_every is not None else int(td.get("checkpointEveryEpisodes", 0))
     checkpoint_dir = args.checkpoint_dir if args.checkpoint_dir is not None else td.get("checkpointDir")
@@ -223,6 +225,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         epsilon_decay_steps=epsilon_decay_steps,
         invalid_action_penalty=invalid_penalty,
         merge_value_bonus_scale=merge_bonus_scale,
+        reward_log_scale=reward_log_scale,
+        empty_cell_reward_scale=empty_cell_reward_scale,
     )
 
     # Print training config summary
@@ -247,6 +251,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  Epsilon:              {epsilon_start} -> {epsilon_end} over {epsilon_decay_steps} steps")
     print(f"  Invalid penalty:      {invalid_penalty}")
     print(f"  Merge bonus scale:    {merge_bonus_scale}")
+    print(f"  Reward log scale:     {reward_log_scale}")
+    print(f"  Empty cell bonus:     {empty_cell_reward_scale}")
     print(f"  Checkpoint every:     {checkpoint_every} episodes")
     print(f"  Checkpoint dir:       {checkpoint_dir or 'N/A'}")
     print(f"  TensorBoard dir:      {tensorboard_dir or 'disabled'}")

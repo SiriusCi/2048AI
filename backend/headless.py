@@ -28,12 +28,16 @@ class Headless2048Env:
         terminate_on_win: bool = True,
         invalid_action_penalty: float = -1.0,
         merge_value_bonus_scale: float = 1.0,
+        reward_log_scale: bool = False,
+        empty_cell_reward_scale: float = 0.0,
     ) -> None:
         self.game = Game2048(size=size, start_tiles=start_tiles, seed=seed)
         self.max_steps = max_steps
         self.terminate_on_win = terminate_on_win
         self.invalid_action_penalty = float(invalid_action_penalty)
         self.merge_value_bonus_scale = float(merge_value_bonus_scale)
+        self.reward_log_scale = bool(reward_log_scale)
+        self.empty_cell_reward_scale = float(empty_cell_reward_scale)
         self.steps = 0
 
         if not self.terminate_on_win:
@@ -144,7 +148,12 @@ class Headless2048Env:
         merge_value_bonus = self.merge_value_bonus_scale * float(merge_value_log2_counted_sum)
         merge_bonus = merge_value_bonus
 
-        reward = score_delta + invalid_action_penalty + merge_bonus
+        if self.reward_log_scale:
+            base_reward = math.log2(score_delta + 1.0) if score_delta > 0 else 0.0
+        else:
+            base_reward = score_delta
+        empty_cell_bonus = self.empty_cell_reward_scale * (empty_cells_after / 15.0)
+        reward = base_reward + invalid_action_penalty + merge_bonus + empty_cell_bonus
         terminated = self.game.over or (self.game.won and self.terminate_on_win)
         truncated = self.max_steps is not None and self.steps >= self.max_steps
 

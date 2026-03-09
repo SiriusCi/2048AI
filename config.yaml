@@ -38,4 +38,6 @@ rl:
   epsilonEnd: 0.01
   epsilonDecaySteps: 100000
   invalidActionPenalty: 0.0
-  mergeValueBonusScale: 1.0
+  mergeValueBonusScale: 0.0
+  rewardLogScale: true
+  emptyCellRewardScale: 0.25

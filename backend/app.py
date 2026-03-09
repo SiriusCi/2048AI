@@ -69,6 +69,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         epsilon_decay_steps=int(rl_raw["epsilonDecaySteps"]),
         invalid_action_penalty=float(rl_raw["invalidActionPenalty"]),
         merge_value_bonus_scale=float(rl_raw["mergeValueBonusScale"]),
+        reward_log_scale=bool(rl_raw.get("rewardLogScale", True)),
+        empty_cell_reward_scale=float(rl_raw.get("emptyCellRewardScale", 0.25)),
     )
     service = GameService(
         training_defaults=training_defaults,

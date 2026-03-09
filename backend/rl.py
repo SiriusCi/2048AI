@@ -44,7 +44,9 @@ class DQNConfig:
     epsilon_end: float = 0.01
     epsilon_decay_steps: int = 100_000
     invalid_action_penalty: float = 0.0
-    merge_value_bonus_scale: float = 1.0
+    merge_value_bonus_scale: float = 0.0
+    reward_log_scale: bool = True
+    empty_cell_reward_scale: float = 0.25
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +360,8 @@ class DQNTrainer:
             terminate_on_win=terminate_on_win,
             invalid_action_penalty=self.config.invalid_action_penalty,
             merge_value_bonus_scale=self.config.merge_value_bonus_scale,
+            reward_log_scale=self.config.reward_log_scale,
+            empty_cell_reward_scale=self.config.empty_cell_reward_scale,
         )
         obs = env.reset(seed=env_seed)
         return env, obs, self._encode_state(obs["state"])
