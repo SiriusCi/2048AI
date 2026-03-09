@@ -31,17 +31,17 @@ class DQNConfig:
 
     max_exponent: int = 15
     gamma: float = 0.99
-    learning_rate: float = 1e-4
-    batch_size: int = 128
-    replay_capacity: int = 50_000
-    min_replay_size: int = 1000
-    target_update_freq: int = 500
+    learning_rate: float = 5e-5
+    batch_size: int = 256
+    replay_capacity: int = 200_000
+    min_replay_size: int = 5000
+    target_update_freq: int = 2000
     train_freq: int = 4
     num_envs: int = 8
     max_grad_norm: float = 10.0
     epsilon_start: float = 1.0
     epsilon_end: float = 0.01
-    epsilon_decay_steps: int = 50_000
+    epsilon_decay_steps: int = 100_000
     invalid_action_penalty: float = 0.0
     merge_value_bonus_scale: float = 1.0
 

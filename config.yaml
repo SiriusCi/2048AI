@@ -26,16 +26,16 @@ trainingDefaults:
 rl:
   maxExponent: 15
   gamma: 0.99
-  learningRate: 0.0001
-  batchSize: 128
-  replayCapacity: 50000
-  minReplaySize: 1000
-  targetUpdateFreq: 500
+  learningRate: 0.00005
+  batchSize: 256
+  replayCapacity: 200000
+  minReplaySize: 5000
+  targetUpdateFreq: 2000
   trainFreq: 4
   numEnvs: 8
   maxGradNorm: 10.0
   epsilonStart: 1.0
   epsilonEnd: 0.01
-  epsilonDecaySteps: 20000
+  epsilonDecaySteps: 100000
   invalidActionPenalty: 0.0
   mergeValueBonusScale: 1.0
