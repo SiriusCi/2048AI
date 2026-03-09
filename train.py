@@ -169,6 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     entropy_coef = args.entropy_coef if args.entropy_coef is not None else float(rl_raw["entropyCoef"])
     value_coef = float(rl_raw["valueCoef"])
     max_grad_norm = float(rl_raw["maxGradNorm"])
+    return_scale = float(rl_raw["returnScale"])
     invalid_penalty = args.invalid_penalty if args.invalid_penalty is not None else float(rl_raw["invalidActionPenalty"])
     merge_bonus_scale = args.merge_bonus_scale if args.merge_bonus_scale is not None else float(rl_raw["mergeValueBonusScale"])
 
@@ -190,6 +191,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         entropy_coef=entropy_coef,
         value_coef=value_coef,
         max_grad_norm=max_grad_norm,
+        return_scale=return_scale,
         invalid_action_penalty=invalid_penalty,
         merge_value_bonus_scale=merge_bonus_scale,
     )
@@ -209,6 +211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  Entropy coef:         {entropy_coef}")
     print(f"  Value coef:           {value_coef}")
     print(f"  Max grad norm:        {max_grad_norm}")
+    print(f"  Return scale:         {return_scale}")
     print(f"  Invalid penalty:      {invalid_penalty}")
     print(f"  Merge bonus scale:    {merge_bonus_scale}")
     print(f"  Checkpoint every:     {checkpoint_every} episodes")

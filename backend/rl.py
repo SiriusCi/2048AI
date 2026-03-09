@@ -30,6 +30,7 @@ class ReinforceCnnConfig:
     entropy_coef: float = 1e-2
     value_coef: float = 0.5
     max_grad_norm: float = 0.5
+    return_scale: float = 0.001
     invalid_action_penalty: float = -1.0
     merge_value_bonus_scale: float = 1.0
 
@@ -77,7 +78,7 @@ class ReinforceCnnTrainer:
         if seed is not None:
             torch.manual_seed(seed)
 
-        self.device = torch.device("cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.channels = self.config.max_exponent + 1
         self.policy_net = OneHotCnnPolicyNet(self.channels).to(self.device)
         self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=self.config.learning_rate)
@@ -138,6 +139,7 @@ class ReinforceCnnTrainer:
                 "entropyCoef": self.config.entropy_coef,
                 "valueCoef": self.config.value_coef,
                 "maxGradNorm": self.config.max_grad_norm,
+                "returnScale": self.config.return_scale,
                 "invalidActionPenalty": self.config.invalid_action_penalty,
                 "mergeValueBonusScale": self.config.merge_value_bonus_scale,
             },
@@ -245,6 +247,7 @@ class ReinforceCnnTrainer:
                 "entropyCoef": self.config.entropy_coef,
                 "valueCoef": self.config.value_coef,
                 "maxGradNorm": self.config.max_grad_norm,
+                "returnScale": self.config.return_scale,
                 "invalidActionPenalty": self.config.invalid_action_penalty,
                 "mergeValueBonusScale": self.config.merge_value_bonus_scale,
                 "episodes": episodes,

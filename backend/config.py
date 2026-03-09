@@ -42,6 +42,7 @@ DEFAULT_RUNTIME_CONFIG: dict[str, Any] = {
         "entropyCoef": 1e-2,
         "valueCoef": 0.5,
         "maxGradNorm": 0.5,
+        "returnScale": 0.001,
         "invalidActionPenalty": -1.0,
         "mergeValueBonusScale": 1.0,
     },
@@ -198,6 +199,7 @@ def load_runtime_config(path: str | Path = "config.yaml") -> dict[str, Any]:
             "entropyCoef": _as_float(rl.get("entropyCoef"), field="rl.entropyCoef", min_value=0.0),
             "valueCoef": _as_float(rl.get("valueCoef"), field="rl.valueCoef", min_value=0.0),
             "maxGradNorm": _as_float(rl.get("maxGradNorm"), field="rl.maxGradNorm", min_value=0.0),
+            "returnScale": _as_float(rl.get("returnScale"), field="rl.returnScale", min_value=0.0),
             "invalidActionPenalty": _as_float(rl.get("invalidActionPenalty"), field="rl.invalidActionPenalty"),
             "mergeValueBonusScale": _as_float(
                 merge_value_bonus_scale_raw,

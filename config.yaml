@@ -28,7 +28,8 @@ rl:
   gamma: 0.95
   learningRate: 0.001
   entropyCoef: 0.05
-  valueCoef: 0.5
+  valueCoef: 0.1
   maxGradNorm: 0.5
+  returnScale: 0.001
   invalidActionPenalty: 0.0
   mergeValueBonusScale: 1.0

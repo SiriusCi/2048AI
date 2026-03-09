@@ -60,6 +60,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         entropy_coef=float(rl_raw["entropyCoef"]),
         value_coef=float(rl_raw["valueCoef"]),
         max_grad_norm=float(rl_raw["maxGradNorm"]),
+        return_scale=float(rl_raw["returnScale"]),
         invalid_action_penalty=float(rl_raw["invalidActionPenalty"]),
         merge_value_bonus_scale=float(rl_raw["mergeValueBonusScale"]),
     )
