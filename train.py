@@ -148,6 +148,9 @@ def _make_episode_callback(log_every: int = 1):
         max_tile = int(result.get("maxTile", 0))
         steps = int(result.get("steps", 0))
         won = bool(result.get("won", False))
+        total_reward = result.get("totalReward", 0.0)
+        base_reward = result.get("totalBaseReward", 0.0)
+        empty_bonus = result.get("totalEmptyCellBonus", 0.0)
         avg_score = metrics.get("averageScore", 0.0)
         loss = metrics.get("loss")
         epsilon = metrics.get("epsilon")
@@ -160,8 +163,9 @@ def _make_episode_callback(log_every: int = 1):
 
         print(
             f"Episode {episode}: score={score}, maxTile={max_tile}, steps={steps}, "
-            f"won={won}, avgScore={avg_score:.2f}, loss={loss_str}, "
-            f"eps={epsilon_str}, replay={replay_size}, globalStep={global_step}{checkpoint_str}",
+            f"won={won}, avgScore={avg_score:.2f}, "
+            f"R={total_reward:.2f}(base={base_reward:.2f},empty={empty_bonus:.2f}), "
+            f"loss={loss_str}, eps={epsilon_str}, replay={replay_size}, globalStep={global_step}{checkpoint_str}",
             flush=True,
         )
     return _on_episode_end

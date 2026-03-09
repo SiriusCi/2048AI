@@ -41,5 +41,5 @@ rl:
   invalidActionPenalty: 0.0
   mergeValueBonusScale: 0.0
   rewardLogScale: true
-  emptyCellRewardScale: 0.25
+  emptyCellRewardScale: 2
   nStep: 3

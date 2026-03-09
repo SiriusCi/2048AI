@@ -488,6 +488,9 @@ class DQNTrainer:
         obs_list: list[dict[str, Any]] = []
         state_tensors: list[torch.Tensor] = []
         ep_rewards: list[float] = [0.0] * num_envs
+        ep_base_rewards: list[float] = [0.0] * num_envs
+        ep_empty_bonus: list[float] = [0.0] * num_envs
+        ep_merge_bonus: list[float] = [0.0] * num_envs
         ep_losses_all: list[list[float]] = [[] for _ in range(num_envs)]
         n_step_bufs: list[NStepBuffer] = [
             NStepBuffer(self.config.n_step, self.config.gamma) for _ in range(num_envs)
@@ -535,6 +538,9 @@ class DQNTrainer:
                             self.replay.push(t)
 
                     ep_rewards[i] += float(reward)
+                    ep_base_rewards[i] += float(step_info.get("baseReward", 0.0))
+                    ep_empty_bonus[i] += float(step_info.get("emptyCellBonus", 0.0))
+                    ep_merge_bonus[i] += float(step_info.get("mergeBonus", 0.0))
                     self.global_step += 1
 
                     if on_step is not None:
@@ -560,6 +566,9 @@ class DQNTrainer:
                         episode_result["terminated"] = bool(terminated)
                         episode_result["truncated"] = bool(truncated)
                         episode_result["totalReward"] = ep_rewards[i]
+                        episode_result["totalBaseReward"] = ep_base_rewards[i]
+                        episode_result["totalEmptyCellBonus"] = ep_empty_bonus[i]
+                        episode_result["totalMergeBonus"] = ep_merge_bonus[i]
 
                         metrics: dict[str, Any] = {
                             "epsilon": self.last_epsilon,
@@ -590,6 +599,9 @@ class DQNTrainer:
                             writer.add_scalar("episode/max_tile", float(next_obs.get("maxTile", 0)), completed)
                             writer.add_scalar("episode/steps", float(next_obs.get("steps", 0)), completed)
                             writer.add_scalar("episode/total_reward", ep_rewards[i], completed)
+                            writer.add_scalar("episode/base_reward", ep_base_rewards[i], completed)
+                            writer.add_scalar("episode/empty_cell_bonus", ep_empty_bonus[i], completed)
+                            writer.add_scalar("episode/merge_bonus", ep_merge_bonus[i], completed)
                             writer.add_scalar("episode/epsilon", self.last_epsilon, completed)
                             writer.add_scalar("episode/avg_loss", avg_loss_ep, completed)
                             writer.add_scalar("episode/replay_size", float(len(self.replay)), completed)
@@ -600,6 +612,9 @@ class DQNTrainer:
                         envs[i], obs_list[i], state_tensors[i] = self._make_env(
                             env_seed, max_steps, terminate_on_win)
                         ep_rewards[i] = 0.0
+                        ep_base_rewards[i] = 0.0
+                        ep_empty_bonus[i] = 0.0
+                        ep_merge_bonus[i] = 0.0
                         ep_losses_all[i] = []
                         n_step_bufs[i] = NStepBuffer(self.config.n_step, self.config.gamma)
 
