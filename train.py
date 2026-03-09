@@ -126,6 +126,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--log-every", type=int, default=1,
         help="Print episode info every N episodes (default: 1)",
     )
+    parser.add_argument(
+        "--num_envs", type=int, default=8,
+        help="",
+    )
     return parser.parse_args(argv)
 
 
@@ -184,7 +188,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     min_replay_size = int(rl_raw["minReplaySize"])
     target_update_freq = int(rl_raw["targetUpdateFreq"])
     train_freq = int(rl_raw["trainFreq"])
-    num_envs = int(rl_raw["numEnvs"])
+    num_envs = args.num_envs if args.num_envs is not None else int(rl_raw["numEnvs"])
     max_grad_norm = float(rl_raw["maxGradNorm"])
     epsilon_start = args.epsilon_start if args.epsilon_start is not None else float(rl_raw["epsilonStart"])
     epsilon_end = args.epsilon_end if args.epsilon_end is not None else float(rl_raw["epsilonEnd"])
