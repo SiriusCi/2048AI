@@ -19,17 +19,22 @@ trainingDefaults:
 
   checkpointEveryEpisodes: 100
   checkpointDir: models/2048
-  checkpointPrefix: reinforce_cnn
+  checkpointPrefix: dqn_cnn
   loadModelPath: null
   playOnly: false
 
 rl:
   maxExponent: 15
-  gamma: 0.95
-  learningRate: 0.003
-  entropyCoef: 0.01
-  valueCoef: 0.1
-  maxGradNorm: 5.0
-  returnScale: 0.001
+  gamma: 0.99
+  learningRate: 0.0001
+  batchSize: 128
+  replayCapacity: 50000
+  minReplaySize: 1000
+  targetUpdateFreq: 500
+  trainFreq: 4
+  maxGradNorm: 10.0
+  epsilonStart: 1.0
+  epsilonEnd: 0.01
+  epsilonDecaySteps: 50000
   invalidActionPenalty: 0.0
   mergeValueBonusScale: 1.0

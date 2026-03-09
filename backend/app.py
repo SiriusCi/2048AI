@@ -9,7 +9,7 @@ from typing import Sequence
 
 from .config import load_runtime_config
 from .http_handler import GameRequestHandler
-from .rl import ReinforceCnnConfig
+from .rl import DQNConfig
 from .service import GameService
 
 
@@ -53,14 +53,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     training_defaults = dict(runtime["trainingDefaults"])
     rl_raw = dict(runtime["rl"])
-    rl_config = ReinforceCnnConfig(
+    rl_config = DQNConfig(
         max_exponent=int(rl_raw["maxExponent"]),
         gamma=float(rl_raw["gamma"]),
         learning_rate=float(rl_raw["learningRate"]),
-        entropy_coef=float(rl_raw["entropyCoef"]),
-        value_coef=float(rl_raw["valueCoef"]),
+        batch_size=int(rl_raw["batchSize"]),
+        replay_capacity=int(rl_raw["replayCapacity"]),
+        min_replay_size=int(rl_raw["minReplaySize"]),
+        target_update_freq=int(rl_raw["targetUpdateFreq"]),
+        train_freq=int(rl_raw["trainFreq"]),
         max_grad_norm=float(rl_raw["maxGradNorm"]),
-        return_scale=float(rl_raw["returnScale"]),
+        epsilon_start=float(rl_raw["epsilonStart"]),
+        epsilon_end=float(rl_raw["epsilonEnd"]),
+        epsilon_decay_steps=int(rl_raw["epsilonDecaySteps"]),
         invalid_action_penalty=float(rl_raw["invalidActionPenalty"]),
         merge_value_bonus_scale=float(rl_raw["mergeValueBonusScale"]),
     )

@@ -29,12 +29,12 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from backend.config import load_runtime_config
-from backend.rl import ReinforceCnnConfig, ReinforceCnnTrainer
+from backend.rl import DQNConfig, DQNTrainer
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train a 2048 RL agent (REINFORCE + CNN) from the command line.",
+        description="Train a 2048 RL agent (DQN + CNN) from the command line.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -67,8 +67,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Discount factor (overrides config)",
     )
     parser.add_argument(
-        "--entropy-coef", type=float, default=None,
-        help="Entropy coefficient (overrides config)",
+        "--batch-size", type=int, default=None,
+        help="Replay batch size (overrides config)",
+    )
+    parser.add_argument(
+        "--epsilon-start", type=float, default=None,
+        help="Starting epsilon for exploration (overrides config)",
+    )
+    parser.add_argument(
+        "--epsilon-end", type=float, default=None,
+        help="Final epsilon for exploration (overrides config)",
+    )
+    parser.add_argument(
+        "--epsilon-decay-steps", type=int, default=None,
+        help="Steps over which epsilon decays (overrides config)",
     )
     parser.add_argument(
         "--invalid-penalty", type=float, default=None,
@@ -134,17 +146,18 @@ def _make_episode_callback(log_every: int = 1):
         won = bool(result.get("won", False))
         avg_score = metrics.get("averageScore", 0.0)
         loss = metrics.get("loss")
-        entropy = metrics.get("entropy")
+        epsilon = metrics.get("epsilon")
         global_step = metrics.get("globalStep", 0)
+        replay_size = metrics.get("replaySize", 0)
 
         loss_str = f"{loss:.4f}" if loss is not None else "N/A"
-        entropy_str = f"{entropy:.4f}" if entropy is not None else "N/A"
+        epsilon_str = f"{epsilon:.4f}" if epsilon is not None else "N/A"
         checkpoint_str = f" | ckpt={checkpoint_path}" if checkpoint_path else ""
 
         print(
             f"Episode {episode}: score={score}, maxTile={max_tile}, steps={steps}, "
             f"won={won}, avgScore={avg_score:.2f}, loss={loss_str}, "
-            f"entropy={entropy_str}, globalStep={global_step}{checkpoint_str}",
+            f"eps={epsilon_str}, replay={replay_size}, globalStep={global_step}{checkpoint_str}",
             flush=True,
         )
     return _on_episode_end
@@ -166,16 +179,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     lr = args.lr if args.lr is not None else float(rl_raw["learningRate"])
     gamma = args.gamma if args.gamma is not None else float(rl_raw["gamma"])
-    entropy_coef = args.entropy_coef if args.entropy_coef is not None else float(rl_raw["entropyCoef"])
-    value_coef = float(rl_raw["valueCoef"])
+    batch_size = args.batch_size if args.batch_size is not None else int(rl_raw["batchSize"])
+    replay_capacity = int(rl_raw["replayCapacity"])
+    min_replay_size = int(rl_raw["minReplaySize"])
+    target_update_freq = int(rl_raw["targetUpdateFreq"])
+    train_freq = int(rl_raw["trainFreq"])
     max_grad_norm = float(rl_raw["maxGradNorm"])
-    return_scale = float(rl_raw["returnScale"])
+    epsilon_start = args.epsilon_start if args.epsilon_start is not None else float(rl_raw["epsilonStart"])
+    epsilon_end = args.epsilon_end if args.epsilon_end is not None else float(rl_raw["epsilonEnd"])
+    epsilon_decay_steps = args.epsilon_decay_steps if args.epsilon_decay_steps is not None else int(rl_raw["epsilonDecaySteps"])
     invalid_penalty = args.invalid_penalty if args.invalid_penalty is not None else float(rl_raw["invalidActionPenalty"])
     merge_bonus_scale = args.merge_bonus_scale if args.merge_bonus_scale is not None else float(rl_raw["mergeValueBonusScale"])
 
     checkpoint_every = args.checkpoint_every if args.checkpoint_every is not None else int(td.get("checkpointEveryEpisodes", 0))
     checkpoint_dir = args.checkpoint_dir if args.checkpoint_dir is not None else td.get("checkpointDir")
-    checkpoint_prefix = args.checkpoint_prefix if args.checkpoint_prefix is not None else str(td.get("checkpointPrefix", "reinforce_cnn"))
+    checkpoint_prefix = args.checkpoint_prefix if args.checkpoint_prefix is not None else str(td.get("checkpointPrefix", "dqn_cnn"))
 
     tensorboard_dir = None if args.no_tensorboard else (args.tensorboard_dir if args.tensorboard_dir is not None else td.get("tensorboardLogDir"))
     tensorboard_run = args.tensorboard_run if args.tensorboard_run is not None else td.get("tensorboardRunName")
@@ -184,21 +202,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     play_only = args.play_only or bool(td.get("playOnly", False))
 
     # Build RL config
-    rl_config = ReinforceCnnConfig(
+    rl_config = DQNConfig(
         max_exponent=int(rl_raw["maxExponent"]),
         gamma=gamma,
         learning_rate=lr,
-        entropy_coef=entropy_coef,
-        value_coef=value_coef,
+        batch_size=batch_size,
+        replay_capacity=replay_capacity,
+        min_replay_size=min_replay_size,
+        target_update_freq=target_update_freq,
+        train_freq=train_freq,
         max_grad_norm=max_grad_norm,
-        return_scale=return_scale,
+        epsilon_start=epsilon_start,
+        epsilon_end=epsilon_end,
+        epsilon_decay_steps=epsilon_decay_steps,
         invalid_action_penalty=invalid_penalty,
         merge_value_bonus_scale=merge_bonus_scale,
     )
 
     # Print training config summary
     print("=" * 60)
-    print("2048 RL Training (REINFORCE + CNN)")
+    print("2048 RL Training (DQN + CNN)")
     print("=" * 60)
     print(f"  Config file:          {runtime['configPath']}")
     print(f"  Episodes:             {episodes}")
@@ -208,10 +231,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  Play only:            {play_only}")
     print(f"  Learning rate:        {lr}")
     print(f"  Gamma:                {gamma}")
-    print(f"  Entropy coef:         {entropy_coef}")
-    print(f"  Value coef:           {value_coef}")
+    print(f"  Batch size:           {batch_size}")
+    print(f"  Replay capacity:      {replay_capacity}")
+    print(f"  Min replay size:      {min_replay_size}")
+    print(f"  Target update freq:   {target_update_freq}")
+    print(f"  Train freq:           {train_freq}")
     print(f"  Max grad norm:        {max_grad_norm}")
-    print(f"  Return scale:         {return_scale}")
+    print(f"  Epsilon:              {epsilon_start} -> {epsilon_end} over {epsilon_decay_steps} steps")
     print(f"  Invalid penalty:      {invalid_penalty}")
     print(f"  Merge bonus scale:    {merge_bonus_scale}")
     print(f"  Checkpoint every:     {checkpoint_every} episodes")
@@ -230,7 +256,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     signal.signal(signal.SIGINT, _signal_handler)
 
     # Create trainer and run
-    trainer = ReinforceCnnTrainer(rl_config, seed=seed)
+    trainer = DQNTrainer(rl_config, seed=seed)
 
     start_time = time.time()
     summary = trainer.train(
@@ -259,7 +285,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  Max tile seen:        {summary['maxTileSeen']}")
     print(f"  Global steps:         {summary['globalStep']}")
     print(f"  Last loss:            {summary['lastLoss']}")
-    print(f"  Last entropy:         {summary['lastEntropy']}")
+    print(f"  Last epsilon:         {summary['lastEpsilon']}")
     print(f"  Elapsed time:         {elapsed:.1f}s")
     if summary.get("tensorboardRunDir"):
         print(f"  TensorBoard dir:      {summary['tensorboardRunDir']}")

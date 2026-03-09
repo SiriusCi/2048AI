@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from .game import Game2048
-from .rl import ReinforceCnnConfig, ReinforceCnnTrainer
+from .rl import DQNConfig, DQNTrainer
 
 
 class TrainingManager:
@@ -22,7 +22,7 @@ class TrainingManager:
     def __init__(
         self,
         *,
-        rl_config: ReinforceCnnConfig | None = None,
+        rl_config: DQNConfig | None = None,
         post_ack_delay_sec: float | None = None,
         default_tensorboard_log_dir: str | None = DEFAULT_TENSORBOARD_LOG_DIR,
         default_checkpoint_dir: str | None = DEFAULT_CHECKPOINT_DIR,
@@ -31,7 +31,7 @@ class TrainingManager:
         self._sync_cv = threading.Condition(self._lock)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        self._rl_config = rl_config or ReinforceCnnConfig()
+        self._rl_config = rl_config or DQNConfig()
         self._post_ack_delay_sec = (
             self.POST_ACK_DELAY_SEC if post_ack_delay_sec is None else float(post_ack_delay_sec)
         )
@@ -48,8 +48,8 @@ class TrainingManager:
             "stopRequested": False,
             "stopped": False,
             "error": None,
-            "algorithm": "reinforce",
-            "network": "cnn-3layer-no-padding",
+            "algorithm": "dqn",
+            "network": "dueling-cnn-3layer",
             "encoding": "onehot-16x4x4",
             "playOnly": False,
             "requestedEpisodes": 0,
@@ -65,7 +65,7 @@ class TrainingManager:
             "lastEpisode": None,
             "recentEpisodes": [],
             "loss": None,
-            "entropy": None,
+            "epsilon": None,
             "globalStep": 0,
             "syncWithFrontend": False,
             "latestFrameId": 0,
@@ -80,7 +80,7 @@ class TrainingManager:
             "tensorboardWarning": None,
             "checkpointEveryEpisodes": 0,
             "checkpointDir": self._default_checkpoint_dir,
-            "checkpointPrefix": "reinforce_cnn",
+            "checkpointPrefix": "dqn_cnn",
             "checkpointsSaved": 0,
             "latestCheckpointPath": None,
             "loadModelPath": None,
@@ -106,7 +106,7 @@ class TrainingManager:
         tensorboard_run_name: str | None = None,
         checkpoint_every_episodes: int = 0,
         checkpoint_dir: str | None = None,
-        checkpoint_prefix: str = "reinforce_cnn",
+        checkpoint_prefix: str = "dqn_cnn",
         load_model_path: str | None = None,
         play_only: bool = False,
     ) -> dict[str, Any]:
@@ -135,7 +135,7 @@ class TrainingManager:
             self._status.update(
                 {
                     "running": True,
-                    "algorithm": "reinforce-play" if play_only else "reinforce",
+                    "algorithm": "dqn-play" if play_only else "dqn",
                     "playOnly": play_only,
                     "requestedEpisodes": episodes,
                     "workers": resolved_workers,
@@ -240,7 +240,7 @@ class TrainingManager:
             if len(self._status["recentEpisodes"]) > 20:
                 self._status["recentEpisodes"] = self._status["recentEpisodes"][-20:]
             self._status["loss"] = metrics.get("loss")
-            self._status["entropy"] = metrics.get("entropy")
+            self._status["epsilon"] = metrics.get("epsilon")
             self._status["globalStep"] = int(metrics.get("globalStep", self._status["globalStep"]))
             self._status["currentEpisode"] = int(episode)
             if metrics.get("checkpointPath") is not None:
@@ -337,7 +337,7 @@ class TrainingManager:
     ) -> None:
         error_message: str | None = None
         try:
-            trainer = ReinforceCnnTrainer(self._rl_config, seed=seed)
+            trainer = DQNTrainer(self._rl_config, seed=seed)
             summary = trainer.train(
                 episodes=episodes,
                 max_steps=max_steps,
@@ -357,7 +357,7 @@ class TrainingManager:
             with self._lock:
                 self._status["globalStep"] = int(summary.get("globalStep", self._status["globalStep"]))
                 self._status["loss"] = summary.get("lastLoss", self._status["loss"])
-                self._status["entropy"] = summary.get("lastEntropy", self._status["entropy"])
+                self._status["epsilon"] = summary.get("lastEpsilon", self._status["epsilon"])
                 self._status["averageScore"] = float(summary.get("averageScore", self._status["averageScore"]))
                 self._status["maxTileSeen"] = max(
                     int(self._status["maxTileSeen"]),
@@ -402,7 +402,7 @@ class GameService:
         "tensorboardRunName": None,
         "checkpointEveryEpisodes": 0,
         "checkpointDir": TrainingManager.DEFAULT_CHECKPOINT_DIR,
-        "checkpointPrefix": "reinforce_cnn",
+        "checkpointPrefix": "dqn_cnn",
         "loadModelPath": None,
         "playOnly": False,
     }
@@ -411,7 +411,7 @@ class GameService:
         self,
         *,
         training_defaults: dict[str, Any] | None = None,
-        rl_config: ReinforceCnnConfig | None = None,
+        rl_config: DQNConfig | None = None,
         post_ack_delay_sec: float | None = None,
         default_tensorboard_log_dir: str | None = None,
         default_checkpoint_dir: str | None = None,
@@ -473,7 +473,7 @@ class GameService:
         tensorboard_run_name: str | None = None,
         checkpoint_every_episodes: int = 0,
         checkpoint_dir: str | None = None,
-        checkpoint_prefix: str = "reinforce_cnn",
+        checkpoint_prefix: str = "dqn_cnn",
         load_model_path: str | None = None,
         play_only: bool = False,
     ) -> dict[str, Any]:

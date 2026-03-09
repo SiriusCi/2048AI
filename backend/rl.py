@@ -1,16 +1,17 @@
-"""RL training components for 2048 using CNN + one-hot encoding."""
+"""RL training components for 2048 using DQN + CNN + one-hot encoding."""
 
 from __future__ import annotations
 
 import json
+import random
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 import torch
 from torch import nn
-from torch.distributions import Categorical
 
 from .headless import Headless2048Env
 
@@ -20,23 +21,36 @@ except Exception:  # pragma: no cover - optional runtime dependency
     SummaryWriter = None  # type: ignore[assignment]
 
 
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
 @dataclass
-class ReinforceCnnConfig:
-    """Configuration for a simple CNN policy-gradient trainer."""
+class DQNConfig:
+    """Configuration for the DQN trainer."""
 
     max_exponent: int = 15
     gamma: float = 0.99
-    learning_rate: float = 3e-4
-    entropy_coef: float = 1e-2
-    value_coef: float = 0.5
-    max_grad_norm: float = 0.5
-    return_scale: float = 0.001
-    invalid_action_penalty: float = -1.0
+    learning_rate: float = 1e-4
+    batch_size: int = 128
+    replay_capacity: int = 50_000
+    min_replay_size: int = 1000
+    target_update_freq: int = 500
+    train_freq: int = 4
+    max_grad_norm: float = 10.0
+    epsilon_start: float = 1.0
+    epsilon_end: float = 0.01
+    epsilon_decay_steps: int = 50_000
+    invalid_action_penalty: float = 0.0
     merge_value_bonus_scale: float = 1.0
 
 
-class OneHotCnnPolicyNet(nn.Module):
-    """Policy-only CNN for 4x4 board with no padding."""
+# ---------------------------------------------------------------------------
+# Q-Network (Dueling architecture)
+# ---------------------------------------------------------------------------
+
+class QNetwork(nn.Module):
+    """Dueling Q-network with CNN backbone for 4x4 board."""
 
     def __init__(self, in_channels: int, num_actions: int = 4) -> None:
         super().__init__()
@@ -49,126 +63,87 @@ class OneHotCnnPolicyNet(nn.Module):
             nn.ReLU(),
             nn.Flatten(),
         )
-        self.policy_head = nn.Sequential(
+        self.value_stream = nn.Sequential(
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+        )
+        self.advantage_stream = nn.Sequential(
             nn.Linear(128, 128),
             nn.ReLU(),
             nn.Linear(128, num_actions),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.policy_head(self.features(x))
+        features = self.features(x)
+        value = self.value_stream(features)
+        advantage = self.advantage_stream(features)
+        return value + advantage - advantage.mean(dim=-1, keepdim=True)
 
 
-class ReinforceCnnTrainer:
-    """REINFORCE trainer with one-hot encoding and shallow CNN policy."""
+# ---------------------------------------------------------------------------
+# Replay Buffer
+# ---------------------------------------------------------------------------
 
-    def __init__(self, config: ReinforceCnnConfig, *, seed: int | None = None) -> None:
+class Transition(NamedTuple):
+    state: torch.Tensor
+    action: int
+    reward: float
+    next_state: torch.Tensor
+    done: bool
+    next_movable: list[int]
+
+
+class ReplayBuffer:
+    """Fixed-size circular replay buffer."""
+
+    def __init__(self, capacity: int) -> None:
+        self._buffer: deque[Transition] = deque(maxlen=capacity)
+
+    def push(self, transition: Transition) -> None:
+        self._buffer.append(transition)
+
+    def sample(self, batch_size: int) -> list[Transition]:
+        return random.sample(self._buffer, batch_size)
+
+    def __len__(self) -> int:
+        return len(self._buffer)
+
+
+# ---------------------------------------------------------------------------
+# DQN Trainer
+# ---------------------------------------------------------------------------
+
+class DQNTrainer:
+    """DQN trainer with one-hot CNN, target network, and experience replay."""
+
+    def __init__(self, config: DQNConfig, *, seed: int | None = None) -> None:
         self.config = config
         self.seed = seed
         if seed is not None:
             torch.manual_seed(seed)
+            random.seed(seed)
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.channels = self.config.max_exponent + 1
-        self.policy_net = OneHotCnnPolicyNet(self.channels).to(self.device)
-        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=self.config.learning_rate)
+
+        self.q_net = QNetwork(self.channels).to(self.device)
+        self.target_net = QNetwork(self.channels).to(self.device)
+        self.target_net.load_state_dict(self.q_net.state_dict())
+        self.target_net.eval()
+
+        self.optimizer = torch.optim.Adam(self.q_net.parameters(), lr=self.config.learning_rate)
+        self.replay = ReplayBuffer(self.config.replay_capacity)
 
         self.global_step = 0
         self.last_loss: float | None = None
-        self.last_entropy: float | None = None
-        # Running statistics for return whitening (Welford's online algorithm)
-        self._return_count = 0
-        self._return_mean = 0.0
-        self._return_m2 = 0.0
+        self.last_epsilon: float = self.config.epsilon_start
 
-    def _load_model_weights(self, model_path: str) -> str:
-        checkpoint_path = Path(model_path).expanduser().resolve()
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Model file not found: {checkpoint_path}")
-
-        payload = torch.load(str(checkpoint_path), map_location=self.device)
-        if isinstance(payload, dict) and "modelStateDict" in payload:
-            state_dict = payload["modelStateDict"]
-            loaded_global_step = payload.get("globalStep")
-            if loaded_global_step is not None:
-                try:
-                    self.global_step = int(loaded_global_step)
-                except (TypeError, ValueError):
-                    pass
-            optimizer_state = payload.get("optimizerStateDict")
-            if optimizer_state is not None:
-                try:
-                    self.optimizer.load_state_dict(optimizer_state)
-                except Exception:  # noqa: BLE001 - best-effort restore
-                    pass
-        elif isinstance(payload, dict):
-            state_dict = payload
-        else:
-            raise ValueError("Unsupported model file format.")
-
-        self.policy_net.load_state_dict(state_dict, strict=True)
-        return str(checkpoint_path)
-
-    def _save_checkpoint(
-        self,
-        *,
-        checkpoint_path: Path,
-        episode: int,
-        average_score: float,
-        max_tile_seen: int,
-    ) -> str:
-        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "algorithm": "reinforce",
-            "network": "cnn-3layer-no-padding",
-            "encoding": "onehot-16x4x4",
-            "episode": int(episode),
-            "globalStep": int(self.global_step),
-            "averageScore": float(average_score),
-            "maxTileSeen": int(max_tile_seen),
-            "config": {
-                "maxExponent": self.config.max_exponent,
-                "gamma": self.config.gamma,
-                "learningRate": self.config.learning_rate,
-                "entropyCoef": self.config.entropy_coef,
-                "valueCoef": self.config.value_coef,
-                "maxGradNorm": self.config.max_grad_norm,
-                "returnScale": self.config.return_scale,
-                "invalidActionPenalty": self.config.invalid_action_penalty,
-                "mergeValueBonusScale": self.config.merge_value_bonus_scale,
-            },
-            "modelStateDict": self.policy_net.state_dict(),
-            "optimizerStateDict": self.optimizer.state_dict(),
-            "savedAt": time.time(),
-        }
-        torch.save(payload, str(checkpoint_path))
-        return str(checkpoint_path.resolve())
-
-    def _build_tensorboard_writer(
-        self,
-        *,
-        tensorboard_log_dir: str | None,
-        tensorboard_run_name: str | None,
-    ) -> tuple[Any | None, str | None, str | None]:
-        if not tensorboard_log_dir:
-            return None, None, None
-
-        if SummaryWriter is None:
-            return None, None, "TensorBoard writer unavailable: install tensorboard package."
-
-        base_dir = Path(tensorboard_log_dir).expanduser().resolve()
-        run_name = tensorboard_run_name or time.strftime("reinforce_%Y%m%d_%H%M%S")
-        run_dir = base_dir / run_name
-        run_dir.mkdir(parents=True, exist_ok=True)
-
-        try:
-            writer = SummaryWriter(log_dir=str(run_dir))
-        except Exception as error:  # noqa: BLE001
-            return None, None, f"Failed to initialize TensorBoard writer: {error}"
-        return writer, str(run_dir), None
+    def _epsilon(self) -> float:
+        frac = min(1.0, self.global_step / max(1, self.config.epsilon_decay_steps))
+        return self.config.epsilon_start + frac * (self.config.epsilon_end - self.config.epsilon_start)
 
     def _encode_state(self, state: list[list[int]]) -> torch.Tensor:
-        # Input state is log2 board with empty as 0. We one-hot into 16x4x4.
         encoded = torch.zeros((self.channels, 4, 4), dtype=torch.float32)
         for row in range(4):
             for col in range(4):
@@ -180,14 +155,133 @@ class ReinforceCnnTrainer:
                 encoded[exponent, row, col] = 1.0
         return encoded
 
-    def _discounted_returns(self, rewards: list[float]) -> torch.Tensor:
-        returns = []
-        running = 0.0
-        for reward in reversed(rewards):
-            running = float(reward) + self.config.gamma * running
-            returns.append(running)
-        returns.reverse()
-        return torch.tensor(returns, dtype=torch.float32, device=self.device)
+    def _select_action(self, state_tensor: torch.Tensor, movable: list[int], epsilon: float) -> int:
+        if not movable:
+            return 0
+        if random.random() < epsilon:
+            return random.choice(movable)
+        with torch.no_grad():
+            q_values = self.q_net(state_tensor.unsqueeze(0).to(self.device)).squeeze(0)
+            mask = torch.full_like(q_values, float("-inf"))
+            for a in movable:
+                mask[a] = 0.0
+            return int((q_values + mask).argmax().item())
+
+    def _learn(self) -> float:
+        if len(self.replay) < self.config.min_replay_size:
+            return 0.0
+
+        batch = self.replay.sample(self.config.batch_size)
+        states = torch.stack([t.state for t in batch]).to(self.device)
+        actions = torch.tensor([t.action for t in batch], dtype=torch.long, device=self.device)
+        rewards = torch.tensor([t.reward for t in batch], dtype=torch.float32, device=self.device)
+        next_states = torch.stack([t.next_state for t in batch]).to(self.device)
+        dones = torch.tensor([t.done for t in batch], dtype=torch.float32, device=self.device)
+
+        q_values = self.q_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+
+        with torch.no_grad():
+            next_q_online = self.q_net(next_states)
+            next_q_target = self.target_net(next_states)
+            for i, t in enumerate(batch):
+                if t.done:
+                    continue
+                m = torch.full((4,), float("-inf"), device=self.device)
+                for a in t.next_movable:
+                    m[a] = 0.0
+                next_q_online[i] = next_q_online[i] + m
+            best_actions = next_q_online.argmax(dim=1)
+            next_q = next_q_target.gather(1, best_actions.unsqueeze(1)).squeeze(1)
+            target = rewards + self.config.gamma * next_q * (1.0 - dones)
+
+        loss = nn.functional.smooth_l1_loss(q_values, target)
+        self.optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        nn.utils.clip_grad_norm_(self.q_net.parameters(), self.config.max_grad_norm)
+        self.optimizer.step()
+        return float(loss.item())
+
+    def _load_model_weights(self, model_path: str) -> str:
+        checkpoint_path = Path(model_path).expanduser().resolve()
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Model file not found: {checkpoint_path}")
+        payload = torch.load(str(checkpoint_path), map_location=self.device)
+        if isinstance(payload, dict) and "modelStateDict" in payload:
+            state_dict = payload["modelStateDict"]
+            gs = payload.get("globalStep")
+            if gs is not None:
+                try:
+                    self.global_step = int(gs)
+                except (TypeError, ValueError):
+                    pass
+            opt_state = payload.get("optimizerStateDict")
+            if opt_state is not None:
+                try:
+                    self.optimizer.load_state_dict(opt_state)
+                except Exception:
+                    pass
+            tgt_state = payload.get("targetNetStateDict")
+            if tgt_state is not None:
+                try:
+                    self.target_net.load_state_dict(tgt_state)
+                except Exception:
+                    pass
+        elif isinstance(payload, dict):
+            state_dict = payload
+        else:
+            raise ValueError("Unsupported model file format.")
+        self.q_net.load_state_dict(state_dict, strict=True)
+        return str(checkpoint_path)
+
+    def _save_checkpoint(self, *, checkpoint_path: Path, episode: int,
+                         average_score: float, max_tile_seen: int) -> str:
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "algorithm": "dqn",
+            "network": "dueling-cnn-3layer",
+            "encoding": "onehot-16x4x4",
+            "episode": int(episode),
+            "globalStep": int(self.global_step),
+            "averageScore": float(average_score),
+            "maxTileSeen": int(max_tile_seen),
+            "config": {
+                "maxExponent": self.config.max_exponent,
+                "gamma": self.config.gamma,
+                "learningRate": self.config.learning_rate,
+                "batchSize": self.config.batch_size,
+                "replayCapacity": self.config.replay_capacity,
+                "minReplaySize": self.config.min_replay_size,
+                "targetUpdateFreq": self.config.target_update_freq,
+                "maxGradNorm": self.config.max_grad_norm,
+                "epsilonStart": self.config.epsilon_start,
+                "epsilonEnd": self.config.epsilon_end,
+                "epsilonDecaySteps": self.config.epsilon_decay_steps,
+                "invalidActionPenalty": self.config.invalid_action_penalty,
+                "mergeValueBonusScale": self.config.merge_value_bonus_scale,
+            },
+            "modelStateDict": self.q_net.state_dict(),
+            "targetNetStateDict": self.target_net.state_dict(),
+            "optimizerStateDict": self.optimizer.state_dict(),
+            "savedAt": time.time(),
+        }
+        torch.save(payload, str(checkpoint_path))
+        return str(checkpoint_path.resolve())
+
+    def _build_tensorboard_writer(self, *, tensorboard_log_dir: str | None,
+                                   tensorboard_run_name: str | None):
+        if not tensorboard_log_dir:
+            return None, None, None
+        if SummaryWriter is None:
+            return None, None, "TensorBoard writer unavailable: install tensorboard package."
+        base_dir = Path(tensorboard_log_dir).expanduser().resolve()
+        run_name = tensorboard_run_name or time.strftime("dqn_%Y%m%d_%H%M%S")
+        run_dir = base_dir / run_name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            writer = SummaryWriter(log_dir=str(run_dir))
+        except Exception as error:
+            return None, None, f"Failed to initialize TensorBoard writer: {error}"
+        return writer, str(run_dir), None
 
     def train(
         self,
@@ -202,7 +296,7 @@ class ReinforceCnnTrainer:
         tensorboard_run_name: str | None = None,
         checkpoint_every_episodes: int = 0,
         checkpoint_dir: str | None = None,
-        checkpoint_prefix: str = "reinforce_cnn",
+        checkpoint_prefix: str = "dqn_cnn",
         load_model_path: str | None = None,
         play_only: bool = False,
     ) -> dict[str, Any]:
@@ -219,7 +313,6 @@ class ReinforceCnnTrainer:
 
         if checkpoint_every_episodes < 0:
             raise ValueError("checkpoint_every_episodes must be >= 0")
-
         resolved_checkpoint_dir: str | None
         if checkpoint_every_episodes > 0:
             base_dir = checkpoint_dir or str(Path("models") / "2048")
@@ -232,36 +325,18 @@ class ReinforceCnnTrainer:
 
         if writer is not None:
             config_payload = {
-                "algorithm": "reinforce",
-                "network": "cnn-3layer-no-padding",
+                "algorithm": "dqn", "network": "dueling-cnn-3layer",
                 "encoding": "onehot-16x4x4",
-                "maxExponent": self.config.max_exponent,
-                "gamma": self.config.gamma,
-                "learningRate": self.config.learning_rate,
-                "entropyCoef": self.config.entropy_coef,
-                "valueCoef": self.config.value_coef,
-                "maxGradNorm": self.config.max_grad_norm,
-                "returnScale": self.config.return_scale,
-                "invalidActionPenalty": self.config.invalid_action_penalty,
-                "mergeValueBonusScale": self.config.merge_value_bonus_scale,
-                "episodes": episodes,
-                "maxSteps": max_steps,
-                "terminateOnWin": terminate_on_win,
-                "seed": self.seed,
-                "playOnly": play_only,
-                "checkpointEveryEpisodes": checkpoint_every_episodes,
-                "checkpointDir": resolved_checkpoint_dir,
-                "checkpointPrefix": checkpoint_prefix,
-                "loadModelPath": loaded_model_path,
+                "gamma": self.config.gamma, "learningRate": self.config.learning_rate,
+                "batchSize": self.config.batch_size,
+                "replayCapacity": self.config.replay_capacity,
+                "targetUpdateFreq": self.config.target_update_freq,
+                "epsilonStart": self.config.epsilon_start,
+                "epsilonEnd": self.config.epsilon_end,
+                "epsilonDecaySteps": self.config.epsilon_decay_steps,
+                "episodes": episodes, "seed": self.seed,
             }
             writer.add_text("run/config", json.dumps(config_payload, ensure_ascii=True, sort_keys=True), 0)
-            writer.add_scalar("run/episodes", float(episodes), 0)
-            writer.add_scalar("run/max_steps", float(max_steps) if max_steps is not None else -1.0, 0)
-            writer.add_scalar("run/seed", float(self.seed) if self.seed is not None else -1.0, 0)
-            writer.add_scalar("run/play_only", 1.0 if play_only else 0.0, 0)
-            writer.add_scalar("run/checkpoint_every_episodes", float(checkpoint_every_episodes), 0)
-            if loaded_model_path is not None:
-                writer.add_text("run/loaded_model_path", loaded_model_path, 0)
 
         try:
             for episode in range(1, episodes + 1):
@@ -270,8 +345,7 @@ class ReinforceCnnTrainer:
 
                 env_seed = None if self.seed is None else self.seed + episode - 1
                 env = Headless2048Env(
-                    seed=env_seed,
-                    max_steps=max_steps,
+                    seed=env_seed, max_steps=max_steps,
                     terminate_on_win=terminate_on_win,
                     invalid_action_penalty=self.config.invalid_action_penalty,
                     merge_value_bonus_scale=self.config.merge_value_bonus_scale,
@@ -280,160 +354,74 @@ class ReinforceCnnTrainer:
                 terminated = False
                 truncated = False
                 total_reward = 0.0
-
-                log_probs: list[torch.Tensor] = []
-                entropies: list[torch.Tensor] = []
-                rewards: list[float] = []
                 actions: list[int] = []
                 moved_count = 0
+                ep_losses: list[float] = []
+
+                state_tensor = self._encode_state(obs["state"])
 
                 while not (terminated or truncated):
                     if stop_event.is_set():
                         break
 
-                    state_tensor = self._encode_state(obs["state"]).unsqueeze(0).to(self.device)
-                    logits = self.policy_net(state_tensor)
-
-                    # Mask invalid actions: set logits of unmovable actions to -inf
                     movable = obs.get("movableActions", [0, 1, 2, 3])
-                    if movable:
-                        mask = torch.full_like(logits, float("-inf"))
-                        for a in movable:
-                            mask[0, a] = 0.0
-                        logits = logits + mask
-
-                    dist = Categorical(logits=logits)
-                    action = dist.sample()
-                    action_index = int(action.item())
+                    epsilon = 0.0 if play_only else self._epsilon()
+                    self.last_epsilon = epsilon
+                    action_index = self._select_action(state_tensor, movable, epsilon)
 
                     next_obs, reward, terminated, truncated, step_info = env.step(action_index)
-                    log_probs.append(dist.log_prob(action))
-                    entropy_step = dist.entropy()
-                    entropies.append(entropy_step)
-                    rewards.append(float(reward))
-                    actions.append(action_index)
+                    next_state_tensor = self._encode_state(next_obs["state"])
+                    next_movable = next_obs.get("movableActions", [0, 1, 2, 3])
 
+                    if not play_only:
+                        done = terminated or truncated
+                        self.replay.push(Transition(
+                            state=state_tensor,
+                            action=action_index,
+                            reward=float(reward),
+                            next_state=next_state_tensor,
+                            done=done,
+                            next_movable=next_movable,
+                        ))
+                        if self.global_step % self.config.train_freq == 0:
+                            loss_val = self._learn()
+                            if loss_val > 0:
+                                ep_losses.append(loss_val)
+
+                        # Target network sync
+                        if self.global_step % self.config.target_update_freq == 0:
+                            self.target_net.load_state_dict(self.q_net.state_dict())
+
+                    actions.append(action_index)
                     moved = bool(step_info.get("moved", False))
                     if moved:
                         moved_count += 1
-
                     self.global_step += 1
                     total_reward += float(reward)
-                    obs = next_obs
 
                     if writer is not None:
-                        probs = dist.probs.squeeze(0).detach().cpu()
-                        movable_actions = step_info.get("movableActions", [])
-                        raw_board = obs.get("rawBoard", [])
-                        empty_cells = sum(1 for row in raw_board for value in row if int(value) == 0)
-                        invalid_action_penalty = float(step_info.get("invalidActionPenalty", 0.0))
-                        merge_bonus = float(step_info.get("mergeBonus", 0.0))
-                        merge_value_bonus = float(step_info.get("mergeValueBonus", 0.0))
-                        merge_count = float(step_info.get("mergeCount", 0.0))
-                        merge_value_log2_counted_sum = float(step_info.get("mergeValueLog2CountedSum", 0.0))
-                        score_delta = float(step_info.get("scoreDelta", reward))
-                        empty_cells_reduced = float(step_info.get("emptyCellsReduced", 0.0))
                         writer.add_scalar("train/step_reward", float(reward), self.global_step)
-                        writer.add_scalar("reward/score_delta", score_delta, self.global_step)
-                        writer.add_scalar("reward/invalid_action_penalty", invalid_action_penalty, self.global_step)
-                        writer.add_scalar("reward/merge_bonus", merge_bonus, self.global_step)
-                        writer.add_scalar("reward/merge_value_bonus", merge_value_bonus, self.global_step)
-                        writer.add_scalar("reward/merge_count", merge_count, self.global_step)
-                        writer.add_scalar(
-                            "reward/merge_value_log2_counted_sum",
-                            merge_value_log2_counted_sum,
-                            self.global_step,
-                        )
-                        writer.add_scalar("reward/empty_cells_reduced", empty_cells_reduced, self.global_step)
-                        writer.add_scalar("train/episode_return_running", total_reward, self.global_step)
-                        writer.add_scalar("train/score", float(obs.get("score", 0)), self.global_step)
-                        writer.add_scalar("train/max_tile", float(obs.get("maxTile", 0)), self.global_step)
-                        writer.add_scalar("train/action_selected", float(action_index), self.global_step)
-                        writer.add_scalar("train/moved", 1.0 if moved else 0.0, self.global_step)
-                        writer.add_scalar("train/movable_actions_count", float(len(movable_actions)), self.global_step)
-                        writer.add_scalar("train/empty_cells", float(empty_cells), self.global_step)
-                        writer.add_scalar(
-                            "train/policy_entropy_step",
-                            float(entropy_step.detach().cpu().item()),
-                            self.global_step,
-                        )
-                        for action_id in range(4):
-                            writer.add_scalar(
-                                f"policy/action_prob_{action_id}",
-                                float(probs[action_id].item()),
-                                self.global_step,
-                            )
+                        writer.add_scalar("train/epsilon", epsilon, self.global_step)
+                        if ep_losses:
+                            writer.add_scalar("train/step_loss", ep_losses[-1], self.global_step)
 
                     if on_step is not None:
-                        step_obs = dict(obs)
-                        step_obs["action"] = int(step_info.get("action", action_index))
+                        step_obs = dict(next_obs)
+                        step_obs["action"] = action_index
                         step_obs["animationGrid"] = step_info.get("animationGrid")
-                        on_step(
-                            episode,
-                            step_obs,
-                            {
-                                "globalStep": self.global_step,
-                                "totalReward": total_reward,
-                            },
-                        )
+                        on_step(episode, step_obs, {
+                            "globalStep": self.global_step,
+                            "totalReward": total_reward,
+                        })
+
+                    state_tensor = next_state_tensor
+                    obs = next_obs
 
                 if stop_event.is_set():
                     break
 
-                grad_norm = 0.0
-                policy_loss_value = 0.0
-                value_loss_value = 0.0
-                return_mean = 0.0
-                return_std = 0.0
-
-                entropy_tensor = torch.stack(entropies).mean()
-                self.last_entropy = float(entropy_tensor.detach().cpu().item())
-
-                if play_only:
-                    self.last_loss = None
-                else:
-                    returns = self._discounted_returns(rewards)
-                    log_probs_tensor = torch.stack(log_probs)
-
-                    # Whiten returns using running statistics across episodes
-                    for r in returns.detach().cpu().tolist():
-                        self._return_count += 1
-                        delta = r - self._return_mean
-                        self._return_mean += delta / self._return_count
-                        delta2 = r - self._return_mean
-                        self._return_m2 += delta * delta2
-
-                    if self._return_count > 1:
-                        running_std = (self._return_m2 / self._return_count) ** 0.5
-                        if running_std > 1e-6:
-                            advantages = (returns - self._return_mean) / running_std
-                        else:
-                            advantages = returns - self._return_mean
-                    else:
-                        advantages = returns
-
-                    policy_loss = -(log_probs_tensor * advantages).mean()
-                    loss = policy_loss - self.config.entropy_coef * entropy_tensor
-
-                    self.optimizer.zero_grad(set_to_none=True)
-                    loss.backward()
-
-                    grad_norm = float(
-                        nn.utils.clip_grad_norm_(
-                            self.policy_net.parameters(),
-                            self.config.max_grad_norm,
-                        ).item()
-                    )
-
-                    self.optimizer.step()
-
-                    self.last_loss = float(loss.detach().cpu().item())
-                    policy_loss_value = float(policy_loss.detach().cpu().item())
-                    value_loss_value = 0.0
-                    return_mean = float(returns.mean().detach().cpu().item()) if returns.numel() > 0 else 0.0
-                    return_std = (
-                        float(returns.std(unbiased=False).detach().cpu().item()) if returns.numel() > 1 else 0.0
-                    )
+                avg_loss = sum(ep_losses) / len(ep_losses) if ep_losses else 0.0
+                self.last_loss = avg_loss if ep_losses else None
 
                 score_sum += float(obs["score"])
                 max_tile_seen = max(max_tile_seen, int(obs["maxTile"]))
@@ -444,19 +432,20 @@ class ReinforceCnnTrainer:
                 episode_result["truncated"] = bool(truncated)
                 episode_result["totalReward"] = total_reward
 
-                metrics = {
-                    "entropy": self.last_entropy,
+                metrics: dict[str, Any] = {
+                    "epsilon": self.last_epsilon,
                     "loss": self.last_loss,
                     "globalStep": self.global_step,
                     "averageScore": (score_sum / completed) if completed > 0 else 0.0,
+                    "replaySize": len(self.replay),
                 }
+
                 if checkpoint_every_episodes > 0 and resolved_checkpoint_dir is not None:
                     if episode % checkpoint_every_episodes == 0:
-                        checkpoint_name = f"{checkpoint_prefix}_ep{episode:06d}.pt"
-                        checkpoint_path = Path(resolved_checkpoint_dir) / checkpoint_name
+                        cp_name = f"{checkpoint_prefix}_ep{episode:06d}.pt"
+                        cp_path = Path(resolved_checkpoint_dir) / cp_name
                         latest_checkpoint_path = self._save_checkpoint(
-                            checkpoint_path=checkpoint_path,
-                            episode=episode,
+                            checkpoint_path=cp_path, episode=episode,
                             average_score=metrics["averageScore"],
                             max_tile_seen=max_tile_seen,
                         )
@@ -472,25 +461,12 @@ class ReinforceCnnTrainer:
                     writer.add_scalar("episode/max_tile", float(obs.get("maxTile", 0)), episode)
                     writer.add_scalar("episode/steps", float(obs.get("steps", 0)), episode)
                     writer.add_scalar("episode/total_reward", float(total_reward), episode)
-                    writer.add_scalar("episode/won", 1.0 if bool(obs.get("won", False)) else 0.0, episode)
-                    writer.add_scalar("episode/terminated", 1.0 if bool(terminated) else 0.0, episode)
-                    writer.add_scalar("episode/truncated", 1.0 if bool(truncated) else 0.0, episode)
-                    writer.add_scalar("episode/move_success_rate", moved_count / max(1, len(actions)), episode)
-                    writer.add_scalar("optimizer/loss", float(self.last_loss or 0.0), self.global_step)
-                    writer.add_scalar("optimizer/policy_loss", policy_loss_value, self.global_step)
-                    writer.add_scalar("optimizer/value_loss", value_loss_value, self.global_step)
-                    writer.add_scalar("optimizer/entropy", self.last_entropy, self.global_step)
-                    writer.add_scalar("optimizer/grad_norm", grad_norm, self.global_step)
-                    writer.add_scalar("optimizer/returns_mean", return_mean, self.global_step)
-                    writer.add_scalar("optimizer/returns_std", return_std, self.global_step)
-                    writer.add_scalar("optimizer/learning_rate", self.optimizer.param_groups[0]["lr"], self.global_step)
+                    writer.add_scalar("episode/epsilon", self.last_epsilon, episode)
+                    writer.add_scalar("episode/avg_loss", avg_loss, episode)
+                    writer.add_scalar("episode/replay_size", float(len(self.replay)), episode)
+                    writer.add_scalar("episode/move_success_rate",
+                                      moved_count / max(1, len(actions)), episode)
                     writer.add_scalar("run/checkpoints_saved", float(checkpoints_saved), episode)
-                    if actions:
-                        writer.add_histogram(
-                            "episode/actions",
-                            torch.tensor(actions, dtype=torch.float32),
-                            episode,
-                        )
                     writer.flush()
         finally:
             if writer is not None:
@@ -503,8 +479,8 @@ class ReinforceCnnTrainer:
             "maxTileSeen": max_tile_seen,
             "globalStep": self.global_step,
             "lastLoss": self.last_loss,
-            "lastEntropy": self.last_entropy,
-            "modelStateDict": self.policy_net.state_dict(),
+            "lastEpsilon": self.last_epsilon,
+            "modelStateDict": self.q_net.state_dict(),
             "tensorboardEnabled": bool(writer is not None),
             "tensorboardRunDir": tensorboard_run_dir,
             "tensorboardWarning": tensorboard_warning,
