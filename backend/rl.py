@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
+import numpy as np
 import torch
 from torch import nn
 
@@ -55,28 +56,41 @@ class QNetwork(nn.Module):
 
     def __init__(self, in_channels: int, num_actions: int = 4) -> None:
         super().__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(in_channels, 128, kernel_size=2, stride=1, padding=0),
+        # Conv path 1: 2x2 kernels (local patterns)
+        self.conv2x2 = nn.Sequential(
+            nn.Conv2d(in_channels, 256, kernel_size=2, stride=1, padding=0),
             nn.ReLU(),
-            nn.Conv2d(128, 128, kernel_size=2, stride=1, padding=0),
+            nn.Conv2d(256, 256, kernel_size=2, stride=1, padding=0),
             nn.ReLU(),
-            nn.Conv2d(128, 128, kernel_size=2, stride=1, padding=0),
+        )  # -> (256, 2, 2)
+        # Conv path 2: 1x1 + 3x3 (broader context)
+        self.conv3x3 = nn.Sequential(
+            nn.Conv2d(in_channels, 256, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.Flatten(),
-        )
+            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=0),
+            nn.ReLU(),
+        )  # -> (256, 2, 2)
+        # Merge: 256*4 + 256*4 = 2048
+        feat_dim = 256 * 4 + 256 * 4
         self.value_stream = nn.Sequential(
-            nn.Linear(128, 128),
+            nn.Linear(feat_dim, 512),
             nn.ReLU(),
-            nn.Linear(128, 1),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1),
         )
         self.advantage_stream = nn.Sequential(
-            nn.Linear(128, 128),
+            nn.Linear(feat_dim, 512),
             nn.ReLU(),
-            nn.Linear(128, num_actions),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, num_actions),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        features = self.features(x)
+        f1 = self.conv2x2(x).flatten(1)
+        f2 = self.conv3x3(x).flatten(1)
+        features = torch.cat([f1, f2], dim=1)
         value = self.value_stream(features)
         advantage = self.advantage_stream(features)
         return value + advantage - advantage.mean(dim=-1, keepdim=True)
@@ -95,20 +109,44 @@ class Transition(NamedTuple):
     next_movable: list[int]
 
 
-class ReplayBuffer:
-    """Fixed-size circular replay buffer."""
+class PrioritizedReplayBuffer:
+    """Proportional prioritized experience replay (sum-tree)."""
 
-    def __init__(self, capacity: int) -> None:
-        self._buffer: deque[Transition] = deque(maxlen=capacity)
+    def __init__(self, capacity: int, alpha: float = 0.6) -> None:
+        self.capacity = capacity
+        self.alpha = alpha
+        self._buffer: list[Transition | None] = [None] * capacity
+        self._priorities = np.zeros(capacity, dtype=np.float64)
+        self._pos = 0
+        self._size = 0
+        self._max_priority = 1.0
 
     def push(self, transition: Transition) -> None:
-        self._buffer.append(transition)
+        self._buffer[self._pos] = transition
+        self._priorities[self._pos] = self._max_priority ** self.alpha
+        self._pos = (self._pos + 1) % self.capacity
+        self._size = min(self._size + 1, self.capacity)
 
-    def sample(self, batch_size: int) -> list[Transition]:
-        return random.sample(self._buffer, batch_size)
+    def sample(self, batch_size: int, beta: float = 0.4
+               ) -> tuple[list[Transition], np.ndarray, np.ndarray]:
+        priorities = self._priorities[:self._size]
+        probs = priorities / priorities.sum()
+        indices = np.random.choice(self._size, size=batch_size, p=probs, replace=False)
+        samples = [self._buffer[i] for i in indices]  # type: ignore[misc]
+
+        # Importance-sampling weights
+        weights = (self._size * probs[indices]) ** (-beta)
+        weights = weights / weights.max()
+        return samples, indices, weights.astype(np.float32)
+
+    def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray) -> None:
+        priorities = (np.abs(td_errors) + 1e-6) ** self.alpha
+        for idx, p in zip(indices, priorities):
+            self._priorities[idx] = p
+            self._max_priority = max(self._max_priority, float(p) ** (1.0 / self.alpha))
 
     def __len__(self) -> int:
-        return len(self._buffer)
+        return self._size
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +172,7 @@ class DQNTrainer:
         self.target_net.eval()
 
         self.optimizer = torch.optim.Adam(self.q_net.parameters(), lr=self.config.learning_rate)
-        self.replay = ReplayBuffer(self.config.replay_capacity)
+        self.replay = PrioritizedReplayBuffer(self.config.replay_capacity)
 
         self.global_step = 0
         self.last_loss: float | None = None
@@ -185,16 +223,23 @@ class DQNTrainer:
                 actions.append(int((q + mask).argmax().item()))
         return actions
 
+    def _per_beta(self) -> float:
+        """Anneal PER importance-sampling beta from 0.4 to 1.0 over training."""
+        frac = min(1.0, self.global_step / max(1, self.config.epsilon_decay_steps * 5))
+        return 0.4 + 0.6 * frac
+
     def _learn(self) -> float:
         if len(self.replay) < self.config.min_replay_size:
             return 0.0
 
-        batch = self.replay.sample(self.config.batch_size)
+        beta = self._per_beta()
+        batch, indices, is_weights = self.replay.sample(self.config.batch_size, beta=beta)
         states = torch.stack([t.state for t in batch]).to(self.device)
         actions = torch.tensor([t.action for t in batch], dtype=torch.long, device=self.device)
         rewards = torch.tensor([t.reward for t in batch], dtype=torch.float32, device=self.device)
         next_states = torch.stack([t.next_state for t in batch]).to(self.device)
         dones = torch.tensor([t.done for t in batch], dtype=torch.float32, device=self.device)
+        weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device)
 
         q_values = self.q_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
@@ -212,7 +257,11 @@ class DQNTrainer:
             next_q = next_q_target.gather(1, best_actions.unsqueeze(1)).squeeze(1)
             target = rewards + self.config.gamma * next_q * (1.0 - dones)
 
-        loss = nn.functional.smooth_l1_loss(q_values, target)
+        td_errors = (q_values - target).detach().cpu().numpy()
+        self.replay.update_priorities(indices, td_errors)
+
+        elementwise_loss = nn.functional.smooth_l1_loss(q_values, target, reduction="none")
+        loss = (elementwise_loss * weights).mean()
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
         nn.utils.clip_grad_norm_(self.q_net.parameters(), self.config.max_grad_norm)
