@@ -37,7 +37,8 @@ class DQNConfig:
     replay_capacity: int = 200_000
     min_replay_size: int = 5000
     target_update_freq: int = 2000
-    train_freq: int = 4
+    train_freq: int = 1
+    gradient_steps: int = 4
     num_envs: int = 8
     max_grad_norm: float = 10.0
     epsilon_start: float = 1.0
@@ -133,7 +134,7 @@ class PrioritizedReplayBuffer:
                ) -> tuple[list[Transition], np.ndarray, np.ndarray]:
         priorities = self._priorities[:self._size]
         probs = priorities / priorities.sum()
-        indices = np.random.choice(self._size, size=batch_size, p=probs, replace=False)
+        indices = np.random.choice(self._size, size=batch_size, p=probs, replace=True)
         samples = [self._buffer[i] for i in indices]  # type: ignore[misc]
 
         # Importance-sampling weights
@@ -423,6 +424,8 @@ class DQNTrainer:
             writer.add_text("run/config", json.dumps(config_payload, ensure_ascii=True, sort_keys=True), 0)
 
         num_envs = self.config.num_envs
+        batch_iter = 0
+        target_sync_iters = max(1, self.config.target_update_freq // num_envs)
         # Track next seed offset for creating new envs
         next_seed_offset = num_envs
 
@@ -549,17 +552,20 @@ class DQNTrainer:
                         state_tensors[i] = next_st
                         obs_list[i] = next_obs
 
-                # Learn & target sync (once per batch step, not per env)
-                if not play_only and self.global_step % self.config.train_freq == 0:
-                    loss_val = self._learn()
-                    if loss_val > 0:
-                        for ll in ep_losses_all:
-                            ll.append(loss_val)
+                # Learn & target sync (based on batch iterations, not global_step)
+                batch_iter += 1
 
-                if not play_only and self.global_step % self.config.target_update_freq == 0:
+                if not play_only and batch_iter % self.config.train_freq == 0:
+                    for _gs in range(self.config.gradient_steps):
+                        loss_val = self._learn()
+                        if loss_val > 0:
+                            for ll in ep_losses_all:
+                                ll.append(loss_val)
+
+                if not play_only and batch_iter % target_sync_iters == 0:
                     self.target_net.load_state_dict(self.q_net.state_dict())
 
-                if writer is not None and self.global_step % 500 == 0:
+                if writer is not None and batch_iter % max(1, 500 // num_envs) == 0:
                     writer.flush()
         finally:
             if writer is not None:

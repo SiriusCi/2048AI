@@ -31,7 +31,8 @@ rl:
   replayCapacity: 200000
   minReplaySize: 5000
   targetUpdateFreq: 2000
-  trainFreq: 4
+  trainFreq: 1
+  gradientSteps: 4
   numEnvs: 8
   maxGradNorm: 10.0
   epsilonStart: 1.0

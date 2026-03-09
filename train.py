@@ -188,6 +188,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     min_replay_size = int(rl_raw["minReplaySize"])
     target_update_freq = int(rl_raw["targetUpdateFreq"])
     train_freq = int(rl_raw["trainFreq"])
+    gradient_steps = int(rl_raw.get("gradientSteps", 4))
     num_envs = args.num_envs if args.num_envs is not None else int(rl_raw["numEnvs"])
     max_grad_norm = float(rl_raw["maxGradNorm"])
     epsilon_start = args.epsilon_start if args.epsilon_start is not None else float(rl_raw["epsilonStart"])
@@ -218,6 +219,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_replay_size=min_replay_size,
         target_update_freq=target_update_freq,
         train_freq=train_freq,
+        gradient_steps=gradient_steps,
         num_envs=num_envs,
         max_grad_norm=max_grad_norm,
         epsilon_start=epsilon_start,
@@ -246,6 +248,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  Min replay size:      {min_replay_size}")
     print(f"  Target update freq:   {target_update_freq}")
     print(f"  Train freq:           {train_freq}")
+    print(f"  Gradient steps:       {gradient_steps}")
     print(f"  Num envs:             {num_envs}")
     print(f"  Max grad norm:        {max_grad_norm}")
     print(f"  Epsilon:              {epsilon_start} -> {epsilon_end} over {epsilon_decay_steps} steps")
